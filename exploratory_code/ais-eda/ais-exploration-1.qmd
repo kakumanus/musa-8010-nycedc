@@ -1,0 +1,106 @@
+---
+title: "AIS Data Exploration #1"
+format: html
+author: Sujan Kakumanu
+---
+
+```{r setup}
+#| message: false
+#| warning: false
+
+# Set options
+options(scipen = 999)
+
+# Packages
+if(!require(pacman)){install.packages("pacman"); library(pacman, quietly = T)}
+p_load(tidyverse, sf, viridis, lubridate)
+```
+
+The following quarto document begins to explore the AIS dataset. At a high level, AIS (Automatic Identification System) allows large marine vehicles to report their status (location, speed, heading, voyage data, etc). This is used to communicate with other vessels and authorities on-shore (traffic management, for example).
+
+Depending on the size of the vessel, data can be transmitted as frequently as every 2 seconds. As a result, the provided datasets are incredibly large. The analysis code below focuses on one CSV (AIS from June 2025 in NY Harbor). This file is still too large, and will not be uploaded alongside this script.
+
+## Sources:
+
+AIS Data Dictionary: https://coast.noaa.gov/data/marinecadastre/ais/data-dictionary.pdf 
+Vessel type codes: https://coast.noaa.gov/data/marinecadastre/ais/VesselTypeCodes2018.pdf 
+US Coast Guard AIS Description: https://www.navcen.uscg.gov/automatic-identification-system-overview
+
+## Columns of Interest (grouped by loose categories):
+- Vessel features:
+  - mmsi: a unique identifying integer
+  - vessel_name: name of the ship, seems to include the operator name
+  - vessel_type: A code that defines vessel type, cargo type, etc. See link above.
+  - length; width: in meters
+- Travel features:
+  - sog: speed in knots
+  - cog: course in degrees (course is the actual direction of the vessel, taking into account wind and current)
+  - base_date_time: UTC date time
+  - heading: true heading in degrees (the direction of the bow w.r.t true north)
+  - latitude; longitude: in decimal degree
+  
+## Distributions of Select Variables
+
+### Data loading
+
+For this initial exploration, I want to trim the data down to a specific time frame to help with analysis speed. I picked a Wednesday in June to hopefully get a typical working day of data in the harbor.
+```{r load-data}
+#| eval: false # Do not run this block. Only run once to generate the trimmed csv
+
+# Loading the data. Trimming it to Wednesday June 4th for easier analysis at this point.
+ais_06_2025 <- read.csv("AIS_2025.06.csv")
+
+ais_06_2025_trimmed <- ais_06_2025 %>%
+  mutate(base_date_time = ymd_hms(base_date_time)) %>%
+  filter(date(base_date_time) == ymd("2025-06-04"))
+
+write.csv(ais_06_2025_trimmed, "AIS_2025_06_04_filtered.csv", row.names = FALSE)
+```
+
+```{r load-processed-data}
+ais_06_2025_trimmed <- read.csv("AIS_2025_06_04_filtered.csv")
+```
+
+### Frequency of Vessel Types
+Below is a visual of how many pings certain vessel types are sending.
+*Disclaimer*: We probably need to explore the relation between vessel type and frequency of pings (some vehicles are required to transmit more frequently).
+
+```{r}
+ggplot(ais_06_2025_trimmed, aes(x = as.factor(vessel_type))) +
+  geom_bar(fill = "steelblue") +
+  labs(title = "Frequency of Vessel Types",
+       subtitle = "June 4, 2025 - NY Harbor",
+       x = "Vessel Type Code",
+       y = "Number of Pings") +
+  theme_minimal()
+```
+Most Common Vessel codes: 
+
+- 31: Tug and Tow - Towing
+- 37: Pleasure craft
+- 52: Tug and Tow - Tugging
+- 60: All ships of passenger type
+
+### Vessel Size
+```{r}
+ggplot(ais_06_2025_trimmed, aes(x = length)) +
+  geom_histogram(binwidth = 10, fill = "steelblue", color = "white") +
+  labs(title = "Distribution of Vessel Lengths",
+       x = "Length (meters)",
+       y = "Count") +
+  theme_minimal()
+```
+
+### Traffic Volume
+```{r}
+# Note that I ignore docking/docked ships. Noticed a lot of zeros
+ais_june_04 %>%
+  filter(sog > 0.5) %>% 
+  ggplot(aes(x = sog)) +
+  geom_histogram(binwidth = 1, fill = "darkblue", color = "white") +
+  labs(title = "Speed Distribution of Moving Vessels",
+       subtitle = "Excludes stationary vessels (SOG > 0.5 knots)",
+       x = "Speed Over Ground (knots)",
+       y = "Number of Pings") +
+  theme_minimal()
+```
