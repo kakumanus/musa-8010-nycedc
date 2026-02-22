@@ -1,0 +1,377 @@
+---
+title: "NYC Ferry Stops EDA – Data Preparation Notes (Updated Filter)"
+author: "Simon"
+date: "2026-02-22"
+output: html_document
+---
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(tibble)
+library(scales)
+
+base_dir <- "C:/Users/sungz/Box/NYC_Ferry/data/NYCF_data_compiled"
+Sys.setlocale("LC_TIME", "English")
+tz_local <- "America/New_York"
+```
+
+```{r}
+ridership_files <- c(
+  file.path(base_dir, "ridership_details", "NYCF_ridership_details_2024.01_06.csv"),
+  file.path(base_dir, "ridership_details", "NYCF_ridership_details_2024.07_12.csv"),
+  file.path(base_dir, "ridership_details", "NYCF_ridership_details_2025.01_06.csv")
+)
+
+stop_files <- c(
+  file.path(base_dir, "stop_data", "NYCF_stop_data_2024.csv"),
+  file.path(base_dir, "stop_data", "NYCF_stop_data_2025.01_06.csv")
+)
+
+standardize_cols_ridership <- function(df) {
+  nm <- names(df)
+  nm <- ifelse(nm == "Original_On",  "Original_ON",  nm)
+  nm <- ifelse(nm == "Original_Off", "Original_OFF", nm)
+  nm <- ifelse(nm == "WheelChair_On",  "WheelChair_ON",  nm)
+  nm <- ifelse(nm == "WheelChair_Off", "WheelChair_OFF", nm)
+  names(df) <- nm
+  df
+}
+
+ridership <- purrr::map_dfr(
+  ridership_files,
+  ~ readr::read_csv(.x, show_col_types = FALSE) %>%
+    standardize_cols_ridership()
+)
+
+stops <- purrr::map_dfr(
+  stop_files,
+  ~ readr::read_csv(.x, show_col_types = FALSE)
+)
+```
+
+```{r}
+stops <- stops %>%
+  mutate(`Sort Key` = str_replace_all(`Sort Key`, "\\s+", "")) %>%
+  rename_with(~ str_replace_all(.x, "\\s+", "_")) %>%
+  mutate(
+    Stop_Sequence = as.integer(Stop_Sequence),
+    sort_key_adj = paste0(str_sub(Sort_Key, 1, -2), Stop_Sequence),
+    trip_date = mdy(trip_date),
+    weekday = wday(trip_date, label = TRUE, abbr = FALSE),
+    is_weekday = !wday(trip_date) %in% c(1, 7),
+    lbr = coalesce(lbr, 0)
+  ) %>%
+  group_by(trip_date, trip_no, route_no, route_direction) %>%
+  arrange(Stop_Sequence, .by_group = TRUE) %>%
+  mutate(onboard = cumsum(coalesce(boarding_wake, 0)) - cumsum(coalesce(alightings_wake, 0))) %>%
+  ungroup() %>%
+  select(-any_of(c("Row_Number", "Sort_Key", "route_name", "...27")))
+```
+
+```{r}
+parse_dt_nycf <- function(x, tz_local) {
+  x_chr <- as.character(x)
+  x_chr <- str_trim(na_if(x_chr, ""))
+
+  has_ampm <- str_detect(x_chr, regex("\\b(am|pm)\\b", ignore_case = TRUE))
+  has_ampm[is.na(has_ampm)] <- FALSE
+
+  out <- as.POSIXct(rep(NA, length(x_chr)), tz = tz_local)
+
+  idx_2024 <- !has_ampm & !is.na(x_chr)   # "m/d/YYYY H:M"
+  idx_2025 <-  has_ampm & !is.na(x_chr)   # "m/d/YYYY H:M:S AM/PM" (sometimes no seconds)
+
+  out[idx_2024] <- mdy_hm(x_chr[idx_2024], tz = tz_local, quiet = TRUE)
+  out[idx_2025] <- parse_date_time(
+    x_chr[idx_2025],
+    orders = c("mdY IMSp", "mdY IMp"),
+    tz = tz_local,
+    quiet = TRUE
+  )
+
+  out
+}
+
+stops <- stops %>%
+  mutate(
+    scheduled_arrival_dt   = parse_dt_nycf(scheduled_arrival_dt, tz_local),
+    actual_arrival_dt      = parse_dt_nycf(actual_arrival_dt, tz_local),
+    scheduled_departure_dt = parse_dt_nycf(scheduled_departure_dt, tz_local),
+    actual_departure_dt    = parse_dt_nycf(actual_departure_dt, tz_local)
+  )
+```
+
+```{r}
+stops <- stops %>%
+  arrange(trip_date, trip_no, route_no, route_direction, Stop_Sequence) %>%
+  mutate(
+    actual_departure_dt = if_else(
+      row_number() == n(),
+      as.POSIXct(NA, tz = tz_local),
+      actual_departure_dt
+    ),
+    .by = c(trip_date, trip_no, route_no, route_direction)
+  )
+```
+
+```{r}
+stops <- stops %>%
+  select(-any_of("dept_variance_flag")) %>%
+  mutate(
+    arr_diff = as.numeric(difftime(actual_arrival_dt, scheduled_arrival_dt, units = "mins")),
+    dep_diff = as.numeric(difftime(actual_departure_dt, scheduled_departure_dt, units = "mins"))
+  ) %>%
+  arrange(trip_date, trip_no, route_no, route_direction, Stop_Sequence) %>%
+  mutate(
+    sched_water_min = as.numeric(difftime(scheduled_arrival_dt, lag(scheduled_departure_dt), units = "mins")),
+    act_water_min   = as.numeric(difftime(actual_arrival_dt,    lag(actual_departure_dt),    units = "mins")),
+    water_diff      = act_water_min - sched_water_min,
+    .by = c(trip_date, trip_no, route_no, route_direction)
+  ) %>%
+  mutate(
+    act_dwell_min = as.numeric(difftime(actual_departure_dt, actual_arrival_dt, units = "mins"))
+  )
+```
+
+```{r}
+stops <- stops %>%
+  mutate(
+    arr_status = case_when(
+      is.na(arr_diff) ~ NA_character_,
+      arr_diff > 5    ~ "Late",
+      TRUE            ~ "Not_Late"
+    ),
+    dep_status = case_when(
+      is.na(dep_diff) ~ NA_character_,
+      dep_diff < -1   ~ "Early",
+      TRUE            ~ "Not_Early"
+    )
+  )
+```
+
+```{r}
+ridership_capacity_lookup <- ridership %>%
+  transmute(
+    trip_date     = mdy(Date1),
+    route_pattern = Trip_Pattern,
+    trip_no       = Trip_ID,
+    stop_name     = Stop,
+    Vessel_Capacity
+  ) %>%
+  filter(!is.na(Vessel_Capacity)) %>%
+  group_by(trip_date, route_pattern, trip_no, stop_name) %>%
+  summarise(Vessel_Capacity = max(Vessel_Capacity), .groups = "drop")
+
+stops <- stops %>%
+  left_join(
+    ridership_capacity_lookup,
+    by = c("trip_date" = "trip_date",
+           "route_pattern" = "route_pattern",
+           "trip_no" = "trip_no",
+           "stop_name" = "stop_name")
+  ) %>%
+  mutate(load_factor = onboard / Vessel_Capacity)
+```
+
+```{r}
+# Analysis sample: 2024-01-01 ~ 2025-06-30, drop 2024-04-25 SB route
+dat <- stops %>%
+  filter(trip_date >= ymd("2024-01-01"),
+         trip_date <= ymd("2025-06-30")) %>%
+  filter(!(trip_date == ymd("2024-04-25") & route_no == "SB"))
+
+tibble(
+  min_trip_date = min(dat$trip_date, na.rm = TRUE),
+  max_trip_date = max(dat$trip_date, na.rm = TRUE),
+  n_rows_dat    = nrow(dat),
+  n_rows_0425_SB = nrow(dat %>% filter(trip_date == ymd("2024-04-25"), route_no == "SB"))
+)
+```
+
+```{r}
+trip_tbl <- dat %>%
+  mutate(trip_key = paste(trip_date, route_no, route_direction, trip_no, sep = "|")) %>%
+  group_by(trip_key, trip_date, route_no, route_direction) %>%
+  arrange(Stop_Sequence, .by_group = TRUE) %>%
+  summarise(
+    n_stops = n_distinct(stop_id),
+    trip_boardings  = sum(boarding_wake, na.rm = TRUE),
+    trip_alightings = sum(alightings_wake, na.rm = TRUE),
+    trip_total_events = sum(boarding_wake + alightings_wake, na.rm = TRUE),
+    trip_start_departure = first(actual_departure_dt),
+    is_weekday = first(is_weekday),
+    month = floor_date(first(trip_date), "month"),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    day_type = if_else(is_weekday, "Weekday", "Weekend"),
+    dep_hour = hour(trip_start_departure)
+  )
+
+dist_dat <- dat %>%
+  mutate(
+    boarding = coalesce(boarding_wake, 0),
+    alighting = coalesce(alightings_wake, 0),
+    stop_volume = boarding + alighting,
+    dwell_min = act_dwell_min
+  )
+```
+
+```{r}
+route_weekpart <- trip_tbl %>%
+  group_by(route_no, day_type) %>%
+  summarise(
+    total_trips = n(),
+    total_boardings = sum(trip_boardings, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(route_weekpart,
+       aes(x = reorder(route_no, total_boardings, FUN = sum),
+           y = total_boardings, fill = day_type)) +
+  geom_col(position = "stack") +
+  coord_flip() +
+  labs(x = "Route", y = "Total boardings", fill = NULL,
+       title = "Total ridership by route (Weekday vs Weekend)")
+```
+
+```{r}
+route_avg_weekpart <- trip_tbl %>%
+  group_by(route_no, day_type) %>%
+  summarise(
+    avg_boardings_per_trip = mean(trip_boardings, na.rm = TRUE),
+    n_trips = n(),
+    .groups = "drop"
+  )
+
+ggplot(route_avg_weekpart,
+       aes(x = reorder(route_no, avg_boardings_per_trip, FUN = max),
+           y = avg_boardings_per_trip, fill = day_type)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  coord_flip() +
+  labs(x = "Route", y = "Avg boardings per trip", fill = NULL,
+       title = "Average ridership per trip by route (Weekday vs Weekend)")
+```
+
+```{r}
+monthly_weekpart <- trip_tbl %>%
+  filter(month >= ymd("2024-01-01"), month <= ymd("2025-06-01")) %>%
+  group_by(month, day_type) %>%
+  summarise(
+    total_trips = n(),
+    total_boardings = sum(trip_boardings, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(month, day_type)
+
+ggplot(monthly_weekpart, aes(x = month, y = total_boardings, fill = day_type)) +
+  geom_col(position = "stack") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y-%m") +
+  labs(x = NULL, y = "Total boardings", fill = NULL,
+       title = "Monthly ridership (Weekday vs Weekend)") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+```{r}
+hour_weekpart <- trip_tbl %>%
+  filter(!is.na(dep_hour), dep_hour >= 0, dep_hour <= 23) %>%
+  mutate(dep_hour = as.integer(dep_hour)) %>%
+  group_by(dep_hour, day_type) %>%
+  summarise(
+    total_boardings = sum(trip_boardings, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dep_hour, day_type)
+
+ggplot(hour_weekpart, aes(x = dep_hour, y = total_boardings, fill = day_type)) +
+  geom_col(position = "stack") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Total ridership by departure hour (Weekday vs Weekend)",
+       x = "Departure hour", y = "Total boardings", fill = NULL)
+```
+
+```{r}
+ggplot(dist_dat %>% filter(!is.na(dwell_min), dwell_min >= 0, dwell_min <= 30),
+       aes(x = dwell_min)) +
+  geom_histogram(binwidth = 1) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of dwell time (0–30 min)",
+       x = "act_dwell_min (min)", y = "Count")
+```
+
+```{r}
+ggplot(dist_dat %>% filter(!is.na(stop_volume), stop_volume >= 0, stop_volume <= 350),
+       aes(x = stop_volume)) +
+  geom_histogram(bins = 50) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of stop activity (board + alight)",
+       x = "boarding_wake + alightings_wake", y = "Count")
+```
+
+```{r}
+prev_dat <- dist_dat %>%
+  arrange(trip_date, route_no, route_direction, trip_no, Stop_Sequence) %>%
+  group_by(trip_date, route_no, route_direction, trip_no) %>%
+  mutate(
+    prev_dwell_min   = lag(dwell_min),
+    prev_stop_volume = lag(stop_volume)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(arr_status),
+         !is.na(prev_dwell_min), prev_dwell_min >= 0, prev_dwell_min <= 60,
+         !is.na(prev_stop_volume), prev_stop_volume >= 0)
+```
+
+```{r}
+prev_dwell_late_tbl <- prev_dat %>%
+  mutate(
+    prev_dwell_bin = cut(prev_dwell_min,
+                         breaks = c(0, 1, 2, 3, 5, 8, 12, 16, Inf),
+                         include.lowest = TRUE)
+  ) %>%
+  group_by(prev_dwell_bin) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(arr_status == "Late", na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(prev_dwell_late_tbl, aes(x = prev_dwell_bin, y = pct_late)) +
+  geom_col() +
+  geom_text(aes(label = paste0("n=", scales::comma(n))),
+            vjust = -0.3, size = 3) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.12))) +
+  labs(title = "Late rate by previous-stop dwell time bin",
+       x = "Previous stop dwell time bin (min)", y = "Late rate (current stop)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+prev_vol_late_tbl <- prev_dat %>%
+  mutate(
+    prev_vol_bin = cut(prev_stop_volume,
+                       breaks = c(0, 10, 20, 30, 50, 100, 150, 200, Inf),
+                       include.lowest = TRUE)
+  ) %>%
+  group_by(prev_vol_bin) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(arr_status == "Late", na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(prev_vol_late_tbl, aes(x = prev_vol_bin, y = pct_late)) +
+  geom_col() +
+  geom_text(aes(label = paste0("n=", scales::comma(n))),
+            vjust = -0.3, size = 3) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.12))) +
+  labs(title = "Late rate by previous-stop activity bin (board + alight)",
+       x = "Previous stop activity bin", y = "Late rate (current stop)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
