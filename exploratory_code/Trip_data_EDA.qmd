@@ -1,0 +1,175 @@
+---
+title: "NYC Ferry — Landing Data (Delay & Ridership)"
+format: html
+---
+## Definition of Delay
+
+**Arrival Time Variance (minutes)**  
+Actual Arrival − Scheduled Arrival
+
+**Thresholds**
+- **Delayed:** > 5 minutes  
+- **Excessively delayed:** > 10 minutes  
+
+**Rationale**
+- Based on NYC Ferry operational definitions  
+- Chosen for technical feasibility (stable classification, less noise)
+
+
+---
+
+## Delay Rate by Route / Month / Hour
+
+
+```{r set-up}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(scales)
+library(readr)
+library(stringr)
+
+stops_2024 <- read.csv("../data-selected/NYCF_data_compiled/stop_data/NYCF_stop_data_2024.csv")
+stops_2025 <- read.csv("../data-selected/NYCF_data_compiled/stop_data/NYCF_stop_data_2025.01_06.csv")
+
+stops <- bind_rows(stops_2024, stops_2025)
+
+trip_2024 <- read.csv("../data-selected/NYCF_data_compiled/trip_data/NYCF_trip_data_2024.csv")
+trip_2025 <- read.csv("../data-selected/NYCF_data_compiled/trip_data/NYCF_trip_data_2025.01_06.csv")
+
+trip_2024 <- trip_2024 %>% janitor::clean_names()
+trip_2025 <- trip_2025 %>% janitor::clean_names()
+
+make_logical_match <- function(df) {
+  match_cols <- names(df)[str_detect(names(df), "match")]
+  
+  df %>%
+    mutate(across(all_of(match_cols), ~ case_when(
+      .x %in% c(TRUE, "TRUE", "True", "true", "T", "1", 1) ~ TRUE,
+      .x %in% c(FALSE, "FALSE", "False", "false", "F", "0", 0) ~ FALSE,
+      TRUE ~ NA
+    )))
+}
+
+trip_2024 <- make_logical_match(trip_2024)
+trip_2025 <- make_logical_match(trip_2025)
+
+
+trip <- bind_rows(trip_2024, trip_2025)
+
+```
+
+```{r calculate arr-diff}
+parse_dt_nycf <- function(x, tz_local) {
+  x_chr <- as.character(x)
+  x_chr <- str_trim(na_if(x_chr, ""))
+
+  has_ampm <- str_detect(x_chr, regex("\\b(am|pm)\\b", ignore_case = TRUE))
+  has_ampm[is.na(has_ampm)] <- FALSE
+
+  out <- as.POSIXct(rep(NA, length(x_chr)), tz = tz_local)
+
+  idx_2024 <- !has_ampm & !is.na(x_chr)
+  idx_2025 <-  has_ampm & !is.na(x_chr)
+
+  out[idx_2024] <- mdy_hm(x_chr[idx_2024], tz = tz_local, quiet = TRUE)
+  out[idx_2025] <- parse_date_time(x_chr[idx_2025], orders = "mdY IMSp", tz = tz_local, quiet = TRUE)
+
+  out
+}
+
+tz_local <- "America/New_York"
+
+trip2 <- trip %>%
+  mutate(
+    scheduled_departure_dt = parse_dt_nycf(scheduled_departure_dt, tz_local),
+    actual_departure_dt    = parse_dt_nycf(actual_departure_dt, tz_local),
+    scheduled_arrival_dt   = parse_dt_nycf(scheduled_arrival_dt, tz_local),
+    actual_arrival_dt      = parse_dt_nycf(actual_arrival_dt, tz_local),
+
+    arr_diff_min = as.numeric(difftime(actual_arrival_dt, scheduled_arrival_dt, units = "mins")),
+
+    delay_5  = arr_diff_min > 5,
+    delay_10 = arr_diff_min > 10,  # excessive delay（可选）
+    month    = floor_date(mdy(trip_date), "month"),
+    hour     = hour(scheduled_departure_dt),
+    day_type = workday
+  )
+
+```
+
+```{r p-route}
+route_order <- trip2 %>%
+  group_by(route_no) %>%
+  summarise(mean_delay = mean(delay_5, na.rm = TRUE), .groups = "drop") %>%
+  arrange(mean_delay) %>%
+  pull(route_no)
+
+trip2 <- trip2 %>%
+  mutate(route_no = factor(route_no, levels = route_order))
+
+trip2 %>%
+  group_by(route_no, day_type) %>%
+  summarise(delay_rate = mean(delay_5, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = route_no, y = delay_rate, fill = day_type)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.9) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  scale_fill_manual(values = c("Weekday" = "#F8766D", "Weekend" = "#00BFC4")) +
+  theme_gray() +
+  labs(
+    title = "Delay Rate (>5 min) by Route",
+    subtitle = "Weekday vs Weekend",
+    x = NULL,
+    y = "Share of trips delayed",
+    fill = NULL
+  )
+```
+
+
+There is structural variation across routes.
+The Rockaway route (RW) shows the highest delay rates, particularly on weekends where it exceeds 30%.
+This suggests capacity or demand-driven congestion on leisure-heavy routes.”
+
+```{r p-month}
+trip2 %>%
+  group_by(month, day_type) %>%
+  summarise(delay_rate = mean(delay_5, na.rm=TRUE), .groups="drop") %>%
+  ggplot(aes(x=month, y=delay_rate, color=day_type)) +
+  geom_line(size=1) +
+  geom_point() +
+  scale_y_continuous(labels=scales::percent_format()) +
+  scale_x_date(date_breaks="1 month", date_labels="%Y-%m") +
+  labs(
+    title="Delay Rate (>5 min) by Month",
+    x=NULL,
+    y="Share delayed",
+    color=NULL
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle=45, hjust=1))
+
+```
+Delay rates exhibit strong seasonality.
+We see a clear summer spike in 2024, particularly during weekends, where delay rates exceed 20%.This pattern likely reflects increased seasonal demand and recreational travel.Winter months show relatively improved reliability
+```{r p-hour}
+trip2 %>%
+  group_by(hour, day_type) %>%
+  summarise(delay_rate = mean(delay_5, na.rm=TRUE), .groups="drop") %>%
+  ggplot(aes(x=hour, y=delay_rate, color=day_type)) +
+  geom_line(size=1) +
+  geom_point() +
+  scale_x_continuous(breaks=0:23) +
+  scale_y_continuous(labels=scales::percent_format()) +
+  labs(
+    title="Delay Rate (>5 min) by Departure Hour",
+    x="Hour of Day",
+    y="Share delayed",
+    color=NULL
+  ) +
+  theme_minimal()
+
+```
+Delay rates peak in the mid-afternoon between 2pm and 5pm, particularly on weekends.Unlike typical commuter systems, the delay peak is not concentrated in the morning rush hour, but rather in mid-day leisure travel periods.
+
+Taken together, these patterns suggest that delay is driven less by commuter peaks and more by high-demand recreational periods, particularly on routes serving waterfront leisure destinations
