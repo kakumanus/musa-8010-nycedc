@@ -1,8 +1,12 @@
 ---
 title: "Swiftly GPS Data Exploration - 6/16/25 to 6/22/25"
 author: "Tyler Maynard"
-date: "2026-02-17"
-output: html_document
+date: "2026-03-01"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
 ---
 
 ```{r setup, include=FALSE}
@@ -11,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ## Dataset Overview
 
-The Swiftly GPS dataset contains location data every 10-60 seconds from the NYC Ferry AVL system. Columns include vessel, route, trip, block, and coordinates. This will be especially useful in calculating the speed of the vehicle at various points in time, helping identify locations, routes, and trips where the system struggles with on-time performance.   
+The Swiftly GPS dataset contains location data every 10-60 seconds from the NYC Ferry AVL system. Columns include vessel, route, trip, block, and coordinates. This will be especially useful in calculating the speed of the vehicle at various points in time, helping identify locations, routes, and trips where the system struggles with on-time performance.
 
 ## Libraries
 
@@ -38,11 +42,10 @@ library(stringr)
 library(patchwork)
 
 ```
-install.packages('concaveman')
 
 June 16 - 22 2025 Reference Week
 
-## Establishing Service Levels
+For the sake of processing power, we selected a "sample week" to conduct EDA for Swiftly GPS and AIS data. Based on conversations with NYCEDC, ridership is much higher in the summer months, epecially on weekends. Thus, we chose a week during the summer, also including a holiday to evaluate any unique characteristics (if any) during special service days.
 
 ```{r special_service, warning=FALSE, message=FALSE}
 
@@ -53,12 +56,14 @@ special_service <- data.frame(
 
 ## Swiftly Data
 
+The Swiftly GPS data set is available by month in CSV files. The following chunk of code reads the June 2025 CSV file, filters to the dates included in the sample week, and parses out each record's date and time into separate columns.
+
 ```{r data_import, warning=FALSE, message=FALSE}
 # Setting Box Drive Root
-BOX_ROOT <- "C:\\Users\\tjama\\Box\\NYC_Ferry"
+box_root_path <- "C:\\Users\\tjama\\Box\\NYC_Ferry"
 
 # Original csv
-jun2025_original <- read.csv(file.path(BOX_ROOT, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_06.csv"))
+jun2025_original <- read.csv(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_06.csv"))
 
 # Removing extra 'data.' from column names, removing unneeded columns
 jun2025 <- jun2025_original %>%
@@ -101,12 +106,108 @@ jun2025_reference_week <- jun2025 %>%
 #  filter(routeId == "SB") %>%
  # filter(substr(time, 1, 2) %in% c("13", "14", "15", "16", "17", "18", "19", "20", "21")) %>%
   arrange(vehicleId, date_time)   
-
 str(jun2025_reference_week$time)
 
 ```
 
+## Shapefiles
+
+As a way to add more of a spatial context to this analysis, the landings, routes (system after the December 2025 change; still need to get old GTFS data from NYCEDC), hydrology, and boroughs were extracted from the NYC Ferry and NYC OpenData websites. The hydrology object was trimmed to only include hydrology contained within the bounding box created earlier (roughly just round the five boroughs).
+
+```{r sf_objects, warning=FALSE, message=FALSE}
+
+# Download file in GitHub and change path
+landings <- read_sf("C:\\Users\\tjama\\Practicum\\Landings\\landings.shp") %>% 
+  st_transform(32118)
+
+# Separe sf object for landings in the East River.
+landings_east_river <- landings %>%
+  filter(!stop_id %in% c("37","39","43","45","46","48","49","50",
+    "51","52","55","56","57","58","61","62",
+    "16","88","103","104","105","142",
+    "145","149","150","151")) %>% 
+  st_transform(32118)
+
+# Download file in GitHub and change path
+routes <- read_sf("C:\\Users\\tjama\\Practicum\\Landings\\routes.shp") %>%
+  group_by(route_id) %>%
+  summarise() %>% 
+  st_transform(32118)
+
+# Download file in GitHub and change path
+boroughs<- read_sf("C:\\Users\\tjama\\Practicum\\Boundaries\\boroughs.shp") %>% 
+  st_transform(32118)
+
+bbox_east_river <- st_bbox(landings_east_river)
+bbox_expanded_east_river <- bbox_east_river
+bbox_expanded_east_river["xmin"] <- bbox_east_river["xmin"] - 15000
+bbox_expanded_east_river["ymin"] <- bbox_east_river["ymin"] - 15000
+bbox_expanded_east_river["xmax"] <- bbox_east_river["xmax"] + 15000
+bbox_expanded_east_river["ymax"] <- bbox_east_river["ymax"] + 15000
+bbox_poly_east_river <- st_as_sfc(bbox_expanded_east_river)
+
+# Download file in GitHub and change path
+water <- read_sf("C:\\Users\\tjama\\Practicum\\Boundaries\\Hydrology\\Shape\\WBDHU2.shp") %>%
+  st_transform(32118) %>%
+  summarise(geometry = st_union(geometry)) %>%
+  st_intersection(st_transform(st_as_sfc(st_bbox(bbox_expanded_east_river)), 32118))
+
+```
+
+## Standardizing Plots
+
+This chunk simply creates bounding boxes around the study area.
+
+```{r bounding_boxes, warning=FALSE, message=FALSE}
+
+bbox <- st_bbox(c(
+  xmin = -74.30603027343751,
+  ymin = 40.492915026895815,
+  xmax = -73.64959716796876,
+  ymax = 40.919739051062216
+), crs = 4326) 
+
+bbox_area <- st_as_sfc(bbox) %>%
+  st_transform(32118)
+
+
+bbox_service_area <- boroughs %>%
+  st_transform(32118) %>%
+  st_bbox()
+
+```
+
 ## Data Cleaning
+
+The following chunk does more data cleaning, creates sf object for each of the data points, and computes some new fields for feature engineering. Some features created in this chunk include the following:
+
+-   Knots
+
+    -   Based on the time and distance of the previous node of the same trip.
+
+-   Key identifiers
+
+    -   A number of these were created for different analyses, but generally at a base level include the date, trip, and route.
+
+-   OTP
+
+    -   This column classifies the on-time performance at each node based on the schedule adherence column (schedAdhMsec).
+
+-   Excessively Late
+
+    -   This is a binary field that assigns each record to a label of either excessively late (more than 10 minutes past the expected time) or not.
+
+-   First Record Late
+
+    -   Indicates if the trip starts out five minutes past its scheduled time.
+
+-   OTP Transition
+
+    -   Identifies trips where the OTP changes from one status to another (e.g., on-time to late, late to excessively late).
+
+To visualize the exact boundaries at which we se higher concentrations of excessively late data points, a concave polygon was created. This object could be useful (or not) for the future, but exists here if needed for future analyses.
+
+A table showing the number of data points classified as excessively late shows that of the 851,238 data points within this sample week, 25,558 of them were identified as excessively late. This classification of data points means that only about three percent of records qualify. Though this number seems relatively small, it could be that mroe than three percent of trips are considered excessively late since only one excessively late data point in a trip is needed to count as excessively late. Furthermore, this is one week of many that may not accurately represent the agency's OTP issues.
 
 ```{r cleaning_up, warning=FALSE, message=FALSE}
 # Create sf points and coordinates from the SAME jun2025_reference_week
@@ -178,6 +279,7 @@ summary_table <- data.frame(
  jun2025_reference_week_sf <- st_as_sf(jun2025_reference_week, coords = c("lon", "lat"), crs = 4326, remove = FALSE) %>%
   st_transform(32118)
 
+# Summary table of statistics of the speeds
 kable(summary_table, digits = 2, caption = "Summary of Knots") %>%
   kable_styling(
     bootstrap_options = c("striped", "hover"),
@@ -200,13 +302,38 @@ jun2025_reference_week_excessively_lates <- jun2025_reference_week %>%
 jun2025_reference_week_excessively_lates_sf <- st_as_sf(jun2025_reference_week_excessively_lates, coords = c("lon", "lat"), crs = 4326, remove = FALSE) %>%
   st_transform(32118)
 
+# Creates a boundary surrounding all data points that are considered excessively late
 hull <- concaveman(jun2025_reference_week_excessively_lates_sf)
+
+bbox_hull <- st_bbox(hull)
+
+ggplot()+
+  geom_sf(data = boroughs, color = "white") +  
+  geom_sf(data = hull, color = "red", fill = NA, size = 3) +
+ # geom_sf(data = jun2025_reference_week_sf, aes(fill = OTP_transition, color = "red", size = 10, linewidth = 2)) +
+ # geom_sf(data = jun2025_reference_week_excessively_lates_sf, color = "blue", size = 1) +
+  coord_sf(
+    xlim = c(bbox_east_river["xmin"] - 10000, bbox_east_river["xmax"]+ 10000),
+    ylim = c(bbox_east_river["ymin"] - 10000, bbox_east_river["ymax"] + 10000),
+    expand = FALSE
+  ) +
+   labs(
+    title = "Excessivlely Late 'Zone' - Concave Polygon"
+  ) +
+  theme_solid() +
+  theme(
+    plot.title = element_text(size = 20),
+    plot.title.position = "plot"
+  )
   
+# Counts the number of data points per route
 jun2025_reference_week %>%
   count(routeId)
 ```
 
 ## OTP by Direction
+
+This chunk computes the on-time performance of each data point by direction (NB or SB) and filters to only include those which are identified as excessively late and counts them. The first table shows OTP by direction across all routes, while the second table includes routes as an additioanlly category. Northbound and southbound trips comrpise roughly the same share of all trips; however, the higher number of excesively late southbound data points could be indicative of other issues.
 
 ```{r er, warning=FALSE, message=FALSE}
 
@@ -215,20 +342,24 @@ jun2025_reference_week_dir <- jun2025_reference_week %>%
   filter(OTP == "Excessively Late")
 
 jun2025_reference_week_dir %>%
+  count(directionId)
+
+jun2025_reference_week_dir %>%
   count(directionId, routeId)
 
 ```
 
-<!-- ## East River Route -->
-
-<!-- ```{r er, message=FALSE, warning=FALSE} -->
-
-<!-- jun2025_reference_week <- jun2025_reference_week %>% -->
-<!--   filter(routeId == "ER") -->
-
-<!-- ``` -->
-
 ## Bar Charts
+
+The following bar charts visualize some fo the existing and engineered features. The first chart shows the distribution of excessively late trips (i.e., any trip containing at least one data point identified as excessively late) by the "time" spent excessively late. A note here is that "time" in this context represents that count of data points considered excessively late, and the plot shows these counts as percentages of the total number of data points for trips.
+
+The second plot illustrates more of an exploratory analysis graphic. A handful of fields were identified to identify any potential relationship between them and trip tardiness. TThree key takeaways arise from this depiction:
+
+1.  Even though weekdays account of the majority of the data points (there are more weekdays than weekend days and holidays in the sample week and higher service on weekdays), they account for under half of excessively late data points. Weekend service is the only one of these three categories where the excessively late count surpasses the non-excessively late trip count.
+
+2.  Nearly 80 percent of excessively late data points are attributed to the East River and Rockaway routes.
+
+3.  The PM peak period and the hours surroinding it (about 1pm to 10pm) are where the overwhelming majority of problematic data points exist.
 
 ```{r bar_charts, warning=FALSE, message=FALSE}
 
@@ -347,7 +478,6 @@ ggplot() +
 
 ```
 
-
 ## Data Based on Identifier
 
 ```{r long_data, warning=FALSE, message=FALSE}
@@ -362,66 +492,30 @@ jun2025_reference_week_summary <- jun2025_reference_week %>%
   ) 
 ```
 
-## Shapefiles
+## Plots
 
-```{r sf_objects, warning=FALSE, message=FALSE}
-
-landings <- read_sf("C:\\Users\\tjama\\Practicum\\Landings\\landings.shp")
-
-routes <- read_sf("C:\\Users\\tjama\\Practicum\\Landings\\routes.shp") %>%
-  group_by(route_id) %>%
-  summarise()
-
-boroughs<- read_sf("C:\\Users\\tjama\\Practicum\\Boundaries\\boroughs.shp")
-
-
-landings <- st_transform(landings, 32118)
-landings_east_river <- landings %>%
-  filter(!stop_id %in% c("37","39","43","45","46","48","49","50",
-    "51","52","55","56","57","58","61","62",
-    "16","88","103","104","105","142",
-    "145","149","150","151"))
-routes <- st_transform(routes, 32118)
-boroughs <- st_transform(boroughs, 32118)
-
+```{r plots, warning=FALSE, message=FALSE}
+ggplot()+
+  geom_sf(data = boroughs, color = "white") +  
+  geom_sf(data = landings, color = "black", size = 3) +
+   labs(
+    title = "NYC Ferry Landings"
+  ) +
+  theme_solid() +
+  theme(
+    plot.title = element_text(size = 16),
+    plot.title.position = "plot"
+  )
 ```
 
-## Standardizing Plots
+## Fishnet
 
-```{r bounding_boxes, warning=FALSE, message=FALSE}
-
-bbox <- st_bbox(c(
-  xmin = -74.30603027343751,
-  ymin = 40.492915026895815,
-  xmax = -73.64959716796876,
-  ymax = 40.919739051062216
-), crs = 4326) 
-
-bbox_area <- st_as_sfc(bbox) %>%
-  st_transform(32118)
-
-bbox_service_area <- st_bbox(boroughs)
-
-bbox_hull <- st_bbox(hull)
-
-bbox_east_river <- st_bbox(landings_east_river)
-bbox_expanded_east_river <- bbox_east_river
-bbox_expanded_east_river["xmin"] <- bbox_east_river["xmin"] - 15000
-bbox_expanded_east_river["ymin"] <- bbox_east_river["ymin"] - 15000
-bbox_expanded_east_river["xmax"] <- bbox_east_river["xmax"] + 15000
-bbox_expanded_east_river["ymax"] <- bbox_east_river["ymax"] + 15000
-bbox_poly_east_river <- st_as_sfc(bbox_expanded_east_river)
-
-```
-
-## Kernel Density
+Since these datasets contain thousands of points per day, aggregation is the most efficient way to process and observe the data. Thus, a fishnet was created using a grid cell side of 250 meters. The figure represents the data for the sample week, excluding any grid cell with a density of 0.
 
 ```{r kd, dev='ragg_png', dpi=300, warning=FALSE, message=FALSE}
-
-water <- read_sf("C:\\Users\\tjama\\Practicum\\Boundaries\\Hydrology\\Shape\\WBDHU2.shp") %>%
-  st_transform(32118) %>%
-  summarise(geometry = st_union(geometry)) %>%
-  st_intersection(st_transform(st_as_sfc(st_bbox(bbox_expanded_east_river)), 32118))
+nrow(water)
+st_crs(water)
+st_bbox(water)
 
 fishnet <- 
   st_make_grid(water, cellsize = 250) %>%
@@ -436,17 +530,9 @@ jun2025_net <- st_join(
 ) %>%
   filter(!is.na(mean_speed))
 
-nb_queen <- poly2nb(jun2025_net, queen=TRUE)
-lw_queen <- nb2listw(nb_queen, style = "W", zero.policy = TRUE)
-
-local_moran <- localmoran(jun2025_net$mean_speed, lw_queen)
-jun2025_net$Ii <- local_moran[,1]
-jun2025_net$pvalue <- local_moran[,5]
-
 jun2025_ppp <- as.ppp(st_coordinates(jun2025_reference_week_excessively_lates_sf), W = st_bbox(jun2025_net))
 jun2025_KD <- density.ppp(jun2025_ppp, sigma = 1000)
 
-#kd <- st_as_stars
 
 as.data.frame(jun2025_KD) %>%
   st_as_sf(coords = c("x", "y"), crs = st_crs(jun2025_net)) %>%
@@ -455,31 +541,19 @@ as.data.frame(jun2025_KD) %>%
      geom_sf(aes(fill=value), color = NA, linewidth=0) +
      geom_sf(data = landings, color = "black", size = 1, alpha = 0.5) + 
      scale_fill_viridis(name = "Density") +
-     labs(title = "Kernel density of 2017 burglaries") +
-     theme_solid()
+     labs(title = "Kernel Density of Excessively Late Data Points, 6/16/25 to 6/22/25") +
+     theme_solid() +
+  theme(
+    plot.title = element_text(size = 16),
+    plot.subtitle = element_text(size = 16),
+    plot.title.position = "plot")
 
-as.data.frame(jun2025_KD) %>%
-  st_as_sf(coords = c("x", "y"), crs = st_crs(jun2025_net)) %>%
-  aggregate(., jun2025_net, mean) %>%
-  ggplot() +
-    geom_sf(data = boroughs, color = "white") + 
-  geom_sf(aes(fill = value), color = NA, linewidth = 0) +
-#  geom_sf(data = routes, aes(color = as.factor(route_id)), linewidth = 0.5, fill = NA) +
-  geom_sf(data = landings, color = "black", size = 1, alpha = 0.5) +
-  coord_sf(
-    xlim = c(bbox_east_river["xmin"] -15000, bbox_east_river["xmax"] +15000),
-    ylim = c(bbox_east_river["ymin"] -15000, bbox_east_river["ymax"] +15000),
-    expand = FALSE
-  ) +
-  facet_wrap(~ hour) +
-  scale_fill_viridis_c(name = "Density") +
-  scale_color_discrete(name = "Route") +
-  labs(title = "Kernel density of 2017 burglaries") +
-  theme_solid()
 
 ```
 
 ## Mean Speed
+
+The following figure shows the average speed of each data point in knots per grid cell, regardless of on-time performance designation, along with the landings as a reference to see whether there are other areas with slow speeds.
 
 ```{r mean_speed, warning=FALSE, message=FALSE}
 
@@ -504,9 +578,11 @@ ggplot(jun2025_net) +
 
 ```
 
-## Kernel Density Hourly
+## Kernel Density Plots - Hourly
 
-```{r kd, dev='ragg_png', dpi=300, warning=FALSE, message=FALSE}
+To analyze how OTP changes spatially throughout the PM peak times, the kernel densities of excessively late data points were mapped for each hour between 1pm and 10pm (inclusive).
+
+```{r kds, dev='ragg_png', dpi=300, warning=FALSE, message=FALSE}
   
 jun2025_net_13 <- st_join(
   fishnet, jun2025_reference_week_excessively_lates_sf, join = st_intersects) %>%
@@ -589,30 +665,16 @@ jun2025_net_21 <- st_join(
 jun2025_net_21_ppp <- as.ppp(st_coordinates(jun2025_net_21), W = st_bbox(jun2025_net))
 jun2025_net_21_KD <- density.ppp(jun2025_net_21_ppp, sigma = 1000)
 
-
-
-as.data.frame(kd_df) %>%
-  st_as_sf(coords = c("x", "y"), crs = st_crs(jun2025_net)) %>%
-  aggregate(., jun2025_net, mean) %>%
-  ggplot() +
-    geom_sf(data = boroughs, color = "white") + 
-  geom_sf(aes(fill = value), color = NA, linewidth = 0) +
-  geom_sf(data = landings, color = "black", size = 1, alpha = 0.5) +
- # facet_wrap(~ hour, ncol = 6) +
-  coord_sf(
-    xlim = c(bbox_east_river["xmin"] -15000, bbox_east_river["xmax"] +15000),
-    ylim = c(bbox_east_river["ymin"] -15000, bbox_east_river["ymax"] +15000),
-    expand = FALSE
-  ) +
-  scale_fill_viridis_c(name = "Density") +
-  scale_color_discrete(name = "Route") +
-  labs(title = "Kernel Density of Excessively Late Records") +
-  theme_solid()
-
+jun2025_net_22 <- st_join(
+  fishnet, jun2025_reference_week_excessively_lates_sf, join = st_intersects) %>%
+  group_by(uniqueID) %>%
+  filter(hour == "22") %>%
+  summarise(mean_speed = mean(knots, na.rm=TRUE),
+            n = n(), .groups="drop",)
+jun2025_net_22_ppp <- as.ppp(st_coordinates(jun2025_net_22), W = st_bbox(jun2025_net))
+jun2025_net_22_KD <- density.ppp(jun2025_net_22_ppp, sigma = 1000)
 
 ```
-
-## Kernel Plots
 
 ```{r kd_plots, dev='ragg_png', dpi=300, warning=FALSE, message=FALSE}
 
@@ -814,6 +876,28 @@ plot21 <- as.data.frame(jun2025_net_21_KD) %>%
     plot.title.position = "plot"
   )
 
+plot22 <- as.data.frame(jun2025_net_22_KD) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(jun2025_net_22)) %>%
+  aggregate(., jun2025_net_22, mean) %>%
+  ggplot() +
+    geom_sf(data = boroughs, color = "white") + 
+  geom_sf(aes(fill = value), color = NA, linewidth = 0) +
+#  geom_sf(data = landings, color = "black", size = 1, alpha = 0.5) +
+  coord_sf(
+    xlim = c(bbox_hull["xmin"] -100, bbox_hull["xmax"] +100),
+    ylim = c(bbox_hull["ymin"] -100, bbox_hull["ymax"] +100),
+    expand = FALSE
+  ) +
+  scale_fill_viridis_c(name = "") +
+  scale_color_discrete(name = "Route") +
+  labs(title = "Kernel Density - 9:00PM") +
+  theme_solid() +
+  theme(
+    plot.title = element_text(size = 16),
+    plot.subtitle = element_text(size = 16),
+    plot.title.position = "plot"
+  )
+
 plots <- list(plot13,
               plot14,
               plot15,
@@ -822,12 +906,9 @@ plots <- list(plot13,
               plot18,
               plot19,
               plot20,
-              plot21
+              plot21,
+              plot22
 )
-
-wrap_plots(plots, ncol = 3)
-theme(legend.position = "right")
-
 
 # Actual Plot
 
@@ -840,7 +921,8 @@ kd_list <- list(
   '6PM' = jun2025_net_18_KD,
   '7PM' = jun2025_net_19_KD,
   '8PM' = jun2025_net_20_KD,
-  '9PM' = jun2025_net_21_KD
+  '9PM' = jun2025_net_21_KD,
+  '10PM' = jun2025_net_22_KD
 )
 
 all_values <- unlist(lapply(kd_list, \(kd) as.data.frame(kd)$value))
@@ -867,205 +949,38 @@ plots <- imap(kd_list, ~{
       limits = global_limits,
       oob = scales::squish
     ) +
-    labs(title = paste("KD -", .y), subtitle = "Excessively Lates", caption = "250m Cell Size") +
+    labs(title = paste("KD -", .y)) +
     theme_solid() +
   theme(
-    plot.title = element_text(size = 16),
+    plot.title = element_text(size = 12),
     plot.subtitle = element_text(size = 12),
     plot.caption = element_text(size = 12),
     plot.title.position = "plot"
   )
 })
 
-wrap_plots(plots, ncol = 3) +
-  plot_layout(guides = "collect") &
-  theme(legend.position = "right")
-
-
-
-
-```
-
-## Plotting By Hour
-
-```{r kd_hourly, dev='ragg_png', dpi=300, warning=FALSE, message=FALSE}
-
-jun2025_net_hourly <- jun2025_net %>%
-  st_drop_geometry() %>%
-  distinct(uniqueID) %>%                      # base cells
-  tidyr::crossing(hour = 0:23) %>%            # repeat each cell for each hour
-  left_join(
-    jun2025_net %>% select(uniqueID, geometry) %>% distinct(),
-    by = "uniqueID"
-  ) %>%
-  st_as_sf()
-
-kd_hourly <- as.data.frame(jun2025_KD) %>%
-  st_as_sf(coords = c("x", "y"), crs = st_crs(jun2025_net)) %>%
-  aggregate(., jun2025_net_hourly, mean)
-
-ggplot() +
-  geom_sf(data = boroughs, color = "white") +
-  geom_sf(data = kd_hourly, aes(fill = value), color = NA, linewidth = 0) +
-  geom_sf(data = landings, color = "black", size = 1, alpha = 0.5) +
-  coord_sf(
-    xlim = c(bbox_east_river["xmin"] - 15000, bbox_east_river["xmax"] + 15000),
-    ylim = c(bbox_east_river["ymin"] - 15000, bbox_east_river["ymax"] + 15000),
-    expand = FALSE
-  ) +
-  facet_wrap(~ hour) +
-  scale_fill_viridis_c(name = "Density") +
-  labs(title = "Kernel density by hour") +
-  theme_solid()
-
-```
-
-## Moran's I
-
-mean(jun2025_net$n_records)
-
-table(jun2025_net$pvalue < 0.05, useNA = "ifany")
-
-
-```{r moran, warning=FALSE, message=FALSE}
-
-jun2025_net$z_value <- scale(jun2025_net$mean_speed)[,1]
-
-
-jun2025_net$lag_z <- lag.listw(lw_queen, jun2025_net$z_value, zero.policy = TRUE)
-
-
-jun2025_net$cluster <- NA
-
-sig <- jun2025_net$pvalue < 0.05
-
-jun2025_net$cluster[sig & jun2025_net$z > 0 & jun2025_net$lag_z > 0] <- "High-High"
-jun2025_net$cluster[sig & jun2025_net$z < 0 & jun2025_net$lag_z < 0] <- "Low-Low"
-jun2025_net$cluster[sig & jun2025_net$z > 0 & jun2025_net$lag_z < 0] <- "High-Low"
-jun2025_net$cluster[sig & jun2025_net$z < 0 & jun2025_net$lag_z > 0] <- "Low-High"
-
-ggplot(jun2025_net) +
-  geom_sf(aes(fill = cluster), color = NA) +
-  coord_sf(
-    xlim = c(bbox_area["xmin"], bbox_area["xmax"]),
-    ylim = c(bbox_area["ymin"], bbox_area["ymax"]),
-    expand = FALSE
-  ) +
-  scale_fill_manual(
-    values = c(
-      "High-High" = "red",
-      "Low-Low"   = "blue",
-      "High-Low"  = "orange",
-      "Low-High"  = "lightblue"
-    ),
-    na.value = "grey90"
-  ) +
-  geom_sf(data = landings, color = "black", size = 1, alpha = 0.5) + 
-  labs(title = "Local Moran’s I Cluster Map") +
-  theme_minimal()
-
-
-
-```
-
-```{r label_standards, warning=FALSE, message=FALSE}
-
-ranges_quartiles <- quartiles_sf %>%
-  group_by(group) %>%
-  summarise(
-    min_val = round(min(knots, na.rm = TRUE), 2),
-    max_val = round(max(knots, na.rm = TRUE), 2),
-    n = n()
-  )
-
-labels_vec <- paste0(
-  ranges_quartiles$group,
-  " (",
-  ranges_quartiles$min_val,
-  " – ",
-  ranges_quartiles$max_val,
-  " m/s, n = ",
-  ranges_quartiles$n,
-  ")"
-)
-
-names(labels_vec) <- ranges_quartiles$group
-
-ranges_Q1_Q2 <- Q1_Q2_sf %>%
-  group_by(group) %>%
-  summarise(
-    min_val = round(min(knots, na.rm = TRUE), 2),
-    max_val = round(max(knots, na.rm = TRUE), 2),
-    n = n()
-  )
-
-labels_vec_Q1_Q2 <- paste0(
-  ranges_Q1_Q2$group,
-  " (",
-  ranges_Q1_Q2$min_val,
-  " – ",
-  ranges_Q1_Q2$max_val,
-  " m/s, n = ",
-  ranges_Q1_Q2$n,
-  ")"
-)
-
-names(labels_vec_Q1_Q2) <- ranges_Q1_Q2$group
-
-
-```
-
-## Plots
-
-```{r plots, warning=FALSE, message=FALSE}
-ggplot()+
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 3) +
-   labs(
-    title = "NYC Ferry Landings"
-  ) +
-  theme_solid() +
+wrap_plots(plots, ncol = 5) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "Excessively Late Across TOD",
+    caption = "Unified KD Scale, 250m Grid Cell Size"
+  ) &
   theme(
-    plot.title = element_text(size = 16),
-    plot.title.position = "plot"
+    legend.position = "right",
+    legend.box = "horizontal",
+    plot.margin = margin(1, 1, 1, 1)
   )
+
+
 ```
+
+One potentially useful consideration in this analysis is to observe locations where trips change OTP status (e.g., on-time to late, late to excessively late). The following figure does exactly that, only including instances where the OTP status changes to either late or excessively late.
 
 ```{r plot_transitions, warning=FALSE, message=FALSE}
 
 jun2025_reference_week_late_sf <- jun2025_reference_week_sf %>%
   filter(OTP_transition %in% c("Early -> Late", "Late -> Excessively Late", "Ontime -> Late", "Ontime -> Excessively Late"
 ))
-
-ggplot()+
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 2, alpha = 0.5) +
-  geom_sf(data = jun2025_reference_week_late_sf,
-          aes(color = OTP_transition), size = 2, alpha = 0.2) +
-  coord_sf(
-    xlim = c(bbox_east_river["xmin"] - 10000, bbox_east_river["xmax"]+ 10000),
-    ylim = c(bbox_east_river["ymin"] - 10000, bbox_east_river["ymax"] + 10000),
-    expand = FALSE
-  ) +
-   labs(
-    title = "OTP Transition Locations"
-  ) +
-  scale_color_manual(
-    name = "Transition Type",
-    values = c(
-      "Early -> Late" = "orange",
-      "Late -> Excessively Late" = "red"),
-    labels = c(
-      "Early -> Late" = "Early to Late",
-      "Late -> Excessively Late" = "Late to Excessively Late"
-    )
-  ) +
-  facet_wrap(~OTP_transition) +
-  theme_solid() +
-  theme(
-    plot.title = element_text(size = 20),
-    plot.title.position = "plot"
-  )
 
 ggplot()+
   geom_sf(data = boroughs, color = "white") +  
@@ -1101,333 +1016,42 @@ ggplot()+
     plot.title.position = "plot"
   )
 
-unique(jun2025_reference_week_sf$OTP_transition)
 ```
 
-```{r plot_excessively_lates, warning=FALSE, message=FALSE}
-ggplot()+
-  geom_sf(data = boroughs, color = "white") +  
- # geom_sf(data = landings, color = "black", size = 3) +
-  geom_sf(data = jun2025_reference_week_sf, aes(fill = OTP_transition, color = "red", size = 10, linewidth = 2)) +
- # geom_sf(data = jun2025_reference_week_excessively_lates_sf, color = "blue", size = 1) +
-  coord_sf(
-    xlim = c(bbox_east_river["xmin"] - 10000, bbox_east_river["xmax"]+ 10000),
-    ylim = c(bbox_east_river["ymin"] - 10000, bbox_east_river["ymax"] + 10000),
-    expand = FALSE
-  ) +
-   labs(
-    title = "Excessivlely Late 'Zone'"
-  ) +
-  theme_solid() +
-  theme(
-    plot.title = element_text(size = 20),
-    plot.title.position = "plot"
-  )
+## Leaflet Distribution of Data Points by Excessive Lateness
 
-```
+```{r leaflet_plots, warning=FALSE, message=FALSE, eval=FALSE}
 
-```{r plot_speed_quartiles, warning=FALSE, message=FALSE}
-ggplot() +
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 2, alpha = 0.1) +
-  geom_sf(data = quartiles_sf,
-          aes(color = group),
-          size = 1, alpha = 0.01) +
-  coord_sf(
-    xlim = c(bbox_quartiles["xmin"], bbox_quartiles["xmax"]),
-    ylim = c(bbox_quartiles["ymin"], bbox_quartiles["ymax"]),
-    expand = FALSE
-  ) +
-  scale_color_manual(
-    values = c("Q1" = "#1e3888",
-               "Q2" = "#47a8bd",
-               "Q3" = "#ffad69",
-               "Q4" = "#9c3848"),
-    labels = labels_vec,
-    name = "Speed Quartile"
-  ) +
-  guides(color = guide_legend(override.aes = list(alpha = 1, size = 2))) +
-  facet_wrap(~ group) +
-  labs(
-    title = "Small Multiple of Speed Quartiles",
-    subtitle = "January 02, 2024"
-  ) +
-  theme_solid() +
-  theme(
-    plot.title = element_text(size = 16),
-    plot.subtitle = element_text(size = 16),
-    plot.title.position = "plot"
-  )
-```
-
-```{r plot_higher_quartiles, warning=FALSE, message=FALSE}
-
-ggplot() +
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 2, alpha = 0.1) +
-  geom_sf(data = Q1_Q2_sf,
-          aes(color = group),
-          size = 1, alpha = 0.01) +
-  coord_sf(
-    xlim = c(bbox_Q1_Q2["xmin"], bbox_Q1_Q2["xmax"]),
-    ylim = c(bbox_Q1_Q2["ymin"], bbox_Q1_Q2["ymax"]),
-    expand = FALSE
-  ) +
-  scale_color_manual(
-    values = c("Q1" = "#1e3888",
-               "Q2" = "#47a8bd"),
-    labels = labels_vec_Q1_Q2,
-    name = "Speed Quartile"
-  ) +
-  guides(color = guide_legend(override.aes = list(alpha = 1, size = 2))) +
-  facet_wrap(~ group) +
-  labs(
-    title = "Small Multiple of Speed Quartiles Q1 and Q2",
-    subtitle = "January 02, 2024"
-  ) +
-  theme_solid() +
-  theme(
-    plot.title = element_text(size = 16),
-    plot.subtitle = element_text(size = 16),
-    plot.title.position = "plot"
-  )
-```
-  
-```{r plot_focused_higher_quartiles, warning=FALSE, message=FALSE}
-  ggplot() +
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 2, alpha = 0.1) +
-  geom_sf(data = Q1_Q2_sf,
-          aes(color = group),
-          size = 1, alpha = 0.01) +
-  coord_sf(
-    xlim = c(bbox_east_river["xmin"], bbox_east_river["xmax"]),
-    ylim = c(bbox_east_river["ymin"], bbox_east_river["ymax"]),
-    expand = FALSE
-  ) +
-  scale_color_manual(
-    values = c("Q1" = "#1e3888",
-               "Q2" = "#47a8bd"),
-    labels = labels_vec,
-    name = "Speed Quartile"
-  ) +
-  facet_wrap(~ group) +
-  labs(
-    title = "Small Multiple of Speed Quartiles Q1 and Q2 - Focused",
-    subtitle = "January 02, 2024"
-  ) +
-  theme_solid() +
-  theme(
-    plot.title = element_text(size = 16),
-    plot.subtitle = element_text(size = 16),
-    plot.title.position = "plot"
-  )
-```
-
-## Buffers
-
-```{r buffers, warning=FALSE, message=FALSE}
-
-landings_buffers_100ft <- st_buffer(landings, dist = 30.48) %>%
-  st_transform(32118)
+landings_buffers_100ft <- st_buffer(landings, dist = 30.48)
 
 counts <- lengths(st_intersects(landings_buffers_100ft, jun2025_reference_week_excessively_lates_sf))
 
 landings_buffers_100ft$record_count <- counts
-
-```
-
-```{r plot_buffers, warning=FALSE, message=FALSE}
-
-ggplot() +
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 2, alpha = 0.2) +
-  geom_sf(
-    data = landings_buffers_100ft,
-    aes(linewidth = record_count),
-    fill = "#006bb6",
-    color = alpha("#006bb6", 0.5)) +
-  scale_linewidth(range = c(1, 10), name = "Count of Records") +
-   labs(
-    title = "Count of Records Around Landings"
-  ) +
-  theme_solid() +
-  theme(
-    plot.title = element_text(size = 20),
-    plot.title.position = "plot"
-  )
-  
- 
-ggplot() +
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 2, alpha = 0.2) + 
-  geom_sf(data = quartiles_sf,
-          aes(color = group),
-          size = 1, alpha = 0.01) +
-  coord_sf(
-    xlim = c(bbox_quartiles["xmin"], bbox_quartiles["xmax"]),
-    ylim = c(bbox_quartiles["ymin"], bbox_quartiles["ymax"]),
-    expand = FALSE
-  ) +
-  scale_color_manual(
-    values = c("Q1" = "#1e3888",
-               "Q2" = "#47a8bd",
-               "Q3" = "#ffad69",
-               "Q4" = "#9c3848"),
-    labels = labels_vec,
-    name = "Speed Quartile"
-  ) +
-  facet_wrap(~ group) +
-  theme_solid()
-
-ggplot() +
-  geom_sf(data = boroughs, color = "white") +  
-  geom_sf(data = landings, color = "black", size = 2, alpha = 0.5) + 
-  geom_sf(data = quartiles_sf,
-          aes(color = moreThanTenMin),
-          size = 1, alpha = 0.5) +
-  coord_sf(
-    xlim = c(bbox_quartiles["xmin"], bbox_quartiles["xmax"]),
-    ylim = c(bbox_quartiles["ymin"], bbox_quartiles["ymax"]),
-    expand = FALSE
-  ) +
-  scale_color_manual(
-    values = c("No" = "#47a8bd",
-               "Yes" = "#9c3848"),
-    labels = labels_vec,
-    name = "OTP Over Ten Minutes Late"
-  ) +
-  facet_wrap(~ group) +
-  theme_solid()
-
-  
-```
-
-## Split by OTP
-
-```{r more_than_ten_minutes_late, message=FALSE, warning=FALSE}
-
-moreThanTenMinutesLate <- jun2025_reference_week %>% filter(OTP == "Excessively Late")
-notMoreThanTenMinutesLate <- jun2025_reference_week %>% filter(OTP != "Excessively Late")
-
-moreThanTenMinutesLate_sf <- st_as_sf(moreThanTenMinutesLate, coords = c("lon", "lat"), crs = 4326, remove = FALSE)
-
-notMoreThanTenMinutesLate_sf <- st_as_sf(notMoreThanTenMinutesLate, coords = c("lon", "lat"), crs = 4326, remove = FALSE)
-```
-
-## Leaflet
-
-```{r leaflet_plots, warning=FALSE, message=FALSE}
 
 points_plot <- st_transform(landings, 4326)
 buffers_plot <- st_transform(landings_buffers_100ft, 4326)
 routes_plot <- st_transform(routes, 4326)
 boroughs_plot <- st_transform(boroughs, 4326)
 
-# leaflet() %>%
-#   addProviderTiles("Esri.WorldImagery") %>%
-#   addPolygons(
-#     data = boroughs_plot,
-#     color = "#828282",
-#     weight = 1,
-#     fillOpacity = 0.75
-#   ) %>%  
-#   addPolylines(
-#     data = routes_plot,
-#     color = "#006bb6",
-#     weight = 2, 
-#     opacity = 0.2
-#   ) %>%
-#   addPolygons(
-#     data = buffers_plot,
-#     color = "#f58426",
-#     weight = 1,
-#     fillOpacity = 0.75
-#   ) %>%  
-#   addCircleMarkers(
-#     data = points_plot,
-#     radius = 3,
-#     color = "#f58426",
-#     opacity = 0.6
-#   )
+jun2025_reference_week_elate_sf <- jun2025_reference_week_sf %>%
+  filter(OTP == "Excessively Late") %>%
+  st_transform(4326)
 
-quartiles_leaflet <- st_transform(quartiles_sf, 4326)
-Q1_leaflet <- st_transform(Q1_sf, 4326)
-Q2_leaflet <- st_transform(Q2_sf, 4326)
-Q3_leaflet <- st_transform(Q3_sf, 4326)
-Q4_leaflet <- st_transform(Q4_sf, 4326)
-
+jun2025_reference_week_not_elate_sf <- jun2025_reference_week_sf %>%
+  filter(OTP != "Excessively Late") %>%
+  st_transform(4326)
 
 leaflet() %>%
-  addProviderTiles("Esri.WorldImagery") %>%
-  addPolygons(
-    data = boroughs_plot,
-    color = "#828282",
-    weight = 1,
-    fillOpacity = 0.75,
-    group = "Boroughs"
-  ) %>%
-  addPolylines(
-    data = routes_plot,
-    color = "#006bb6",
-    weight = 2,
-    opacity = 0.2,
-    group = "Routes"
-  ) %>%
-  addPolygons(
-    data = buffers_plot,
-    color = "#f58426",
-    weight = 10,
-    fillOpacity = 0.75,
-    group = "Landings",
-    label = ~paste0("Records: ", record_count)
-  ) %>%
-  addCircleMarkers(
-    data = points_plot,
-    radius = 3,
-    color = "#f58426",
-    opacity = 0.6,
-    group = "Landings"
-  ) %>%
-  addCircleMarkers(data = Q1_leaflet, radius = 1, color = "#1e3888", opacity = 0.6, fillOpacity = 0.4, group = "Q1", label = ~paste0("Speed: ", round(knots,2)),
-    popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " m/s",
-  "<br><b>Route:</b> ", routeId,
-  "<br><b>Trip:</b> ", tripId,
-  "<br><b>Vessel</b> ", vehicleId,
-  "<br><b>Time:</b> ", time)) %>%
-  addCircleMarkers(data = Q2_leaflet, radius = 1, color = "#47a8bd", opacity = 0.6, fillOpacity = 0.4, group = "Q2", label = ~paste0("Speed: ", round(knots,2)),
-    popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " m/s",
-  "<br><b>Route:</b> ", routeId,
-  "<br><b>Trip:</b> ", tripId,
-  "<br><b>Vessel</b> ", vehicleId,
-  "<br><b>Time:</b> ", time)) %>%
-  addCircleMarkers(data = Q3_leaflet, radius = 1, color = "#ffad69", opacity = 0.6, fillOpacity = 0.4, group = "Q3", label = ~paste0("Speed: ", round(knots,2)),
-    popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " m/s",
-  "<br><b>Route:</b> ", routeId,
-  "<br><b>Trip:</b> ", tripId,
-  "<br><b>Vessel</b> ", vehicleId,
-  "<br><b>Time:</b> ", time)) %>%
-  addCircleMarkers(data = Q4_leaflet, radius = 1, color = "#9c3848", opacity = 0.6, fillOpacity = 0.4, group = "Q2", label = ~paste0("Speed: ", round(knots,2)),
-    popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " m/s",
-  "<br><b>Route:</b> ", routeId,
-  "<br><b>Trip:</b> ", tripId,
-  "<br><b>Vessel</b> ", vehicleId,
-  "<br><b>Time:</b> ", time)) %>%
-  addLayersControl(
-    overlayGroups = c("Boroughs", "Routes", "Landings", "Q1", "Q2", "Q3", "Q4"),
-    baseGroups = c("Imagery"),
-    options = layersControlOptions(collapsed = FALSE)
-  )
-
-leaflet() %>%
-  addProviderTiles("Esri.WorldImagery", group = "Imagery") %>%
+  addProviderTiles("Esri.WorldImagery", 
+                   group = "Imagery",
+                   options = tileOptions(opacity = 0.6)) %>%
   addPolygons(data = boroughs_plot, color = "#828282", weight = 1, fillOpacity = 0.75, group = "Boroughs") %>%
   addPolylines(data = routes_plot, color = "#006bb6", weight = 2, opacity = 0.2, group = "Routes") %>%
   addPolygons(data = buffers_plot, color = "#f58426", weight = 10, fillOpacity = 0.75, group = "Landings",
               label = ~paste0("Records: ", record_count)) %>%
   addCircleMarkers(data = points_plot, radius = 3, color = "#f58426", opacity = 0.6, group = "Landings") %>%
   addCircleMarkers(
-    data = moreThanTenMinutesLate_sf, radius = 1, color = "#47a8bd",
+    data = jun2025_reference_week_elate_sf, radius = 0.5, color = "#47a8bd",
     opacity = 0.6, fillOpacity = 0.4, group = "Not Excessively Late",
     label = ~paste0("Speed: ", round(knots, 2)),
     popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " m/s",
@@ -1437,7 +1061,7 @@ leaflet() %>%
                     "<br><b>Time:</b> ", time)
   ) %>%
   addCircleMarkers(
-    data = notMoreThanTenMinutesLate_sf, radius = 1, color = "#9c3848",
+    data = jun2025_reference_week_not_elate_sf, radius = 0.5, color = "#9c3848",
     opacity = 0.6, fillOpacity = 0.4, group = "Excessively Late",
     label = ~paste0("Speed: ", round(knots, 2)),
     popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " m/s",
@@ -1477,3 +1101,5 @@ leaflet() %>%
   )
 
 ```
+
+This Leaflet map shows the data with an imagery layer for context. For the  sake of processing power, the results were not shown. However, the code is available and can be viewed by removing the "eval=FALSE" parameter at the beginning of this chunk.
