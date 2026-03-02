@@ -1,0 +1,951 @@
+---
+title: "NYC Ferry Stops EDA – Data Preparation + EDA"
+author: "Simon"
+date: "2026-03-01"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache = TRUE
+)
+options(scipen = 999)
+
+library(tidyverse)
+library(lubridate)
+library(stringr)
+library(tibble)
+library(scales)
+
+base_dir <- "C:/Users/sungz/Box/NYC_Ferry/data/NYCF_data_compiled"
+Sys.setlocale("LC_TIME", "English")
+tz_local <- "America/New_York"
+```
+
+## Overview
+
+### Scope & sample definition
+
+This notebook performs exploratory data analysis (EDA) on compiled NYC Ferry stop-level operations data.
+
+All downstream analysis uses records from 2024-01-01 to 2025-06-30 (inclusive), and excludes 2024-04-25 for route `SB` due to a known schedule mismatch issue. Passenger activity is measured using `boarding_wake` and `alightings_wake` throughout.
+
+### What this notebook produces
+
+The notebook constructs a cleaned stop-level table, derives operational and reliability metrics (dwell, segment “water time,” delay, and late/early flags), and generates summary tables and plots across routes, months, and hours.
+
+The final analysis sample is stored as `dat` (stop-level), which is also the only dataset exported at the end for downstream modeling and reporting.
+
+## Data Preparation
+
+### Import Data
+
+The following code loads the compiled stop-level dataset and the ridership details dataset. Ridership details are used only to obtain vessel capacity for computing load factor.
+
+```{r}
+ridership_files <- c(
+  file.path(base_dir, "ridership_details", "NYCF_ridership_details_2024.01_06.csv"),
+  file.path(base_dir, "ridership_details", "NYCF_ridership_details_2024.07_12.csv"),
+  file.path(base_dir, "ridership_details", "NYCF_ridership_details_2025.01_06.csv")
+)
+
+stop_files <- c(
+  file.path(base_dir, "stop_data", "NYCF_stop_data_2024.csv"),
+  file.path(base_dir, "stop_data", "NYCF_stop_data_2025.01_06.csv")
+)
+
+standardize_cols_ridership <- function(df) {
+  nm <- names(df)
+  nm <- ifelse(nm == "Original_On",  "Original_ON",  nm)
+  nm <- ifelse(nm == "Original_Off", "Original_OFF", nm)
+  nm <- ifelse(nm == "WheelChair_On",  "WheelChair_ON",  nm)
+  nm <- ifelse(nm == "WheelChair_Off", "WheelChair_OFF", nm)
+  names(df) <- nm
+  df
+}
+
+ridership <- purrr::map_dfr(
+  ridership_files,
+  ~ readr::read_csv(.x, show_col_types = FALSE) %>%
+    standardize_cols_ridership()
+)
+
+stops <- purrr::map_dfr(
+  stop_files,
+  ~ readr::read_csv(.x, show_col_types = FALSE)
+)
+
+glimpse(ridership)
+glimpse(stops)
+```
+
+### Clean stops & build basic features
+
+This step standardizes key fields and column names, cleans `Sort Key`, derives weekday/weekend indicators, and computes an onboard count per stop using cumulative `boarding_wake` minus `alightings_wake` within each trip ordered by `Stop_Sequence`.
+
+```{r}
+stops <- stops %>%
+  mutate(`Sort Key` = str_replace_all(`Sort Key`, "\\s+", "")) %>%
+  rename_with(~ str_replace_all(.x, "\\s+", "_")) %>%
+  mutate(
+    trip_no = as.character(trip_no),
+    route_no = as.character(route_no),
+    route_direction = as.character(route_direction),
+    route_pattern = as.character(route_pattern),
+    stop_name = as.character(stop_name),
+
+    Stop_Sequence = as.integer(Stop_Sequence),
+    sort_key_adj = paste0(str_sub(Sort_Key, 1, -2), Stop_Sequence),
+
+    trip_date = mdy(trip_date),
+    weekday = wday(trip_date, label = TRUE, abbr = FALSE),
+    is_weekday = !wday(trip_date) %in% c(1, 7),
+
+    lbr = coalesce(lbr, 0)
+  ) %>%
+  group_by(trip_date, trip_no, route_no, route_direction) %>%
+  arrange(Stop_Sequence, .by_group = TRUE) %>%
+  mutate(
+    onboard = cumsum(coalesce(boarding_wake, 0)) - cumsum(coalesce(alightings_wake, 0))
+  ) %>%
+  ungroup() %>%
+  select(-any_of(c("Row_Number", "Sort_Key", "route_name", "...27")))
+```
+
+### Parse datetimes (NY local time)
+
+Stop timestamps appear in different string formats across years. We parse both formats into POSIXct and keep them in America/New_York so that time-of-day patterns reflect local operations.
+
+```{r}
+parse_dt_nycf <- function(x, tz_local) {
+  x_chr <- as.character(x)
+  x_chr <- str_trim(na_if(x_chr, ""))
+
+  has_ampm <- str_detect(x_chr, regex("\\b(am|pm)\\b", ignore_case = TRUE))
+  has_ampm[is.na(has_ampm)] <- FALSE
+
+  out <- as.POSIXct(rep(NA, length(x_chr)), tz = tz_local)
+
+  idx_2024 <- !has_ampm & !is.na(x_chr)   # "m/d/YYYY H:M"
+  idx_2025 <-  has_ampm & !is.na(x_chr)   # "m/d/YYYY H:M(:S) AM/PM"
+
+  out[idx_2024] <- mdy_hm(x_chr[idx_2024], tz = tz_local, quiet = TRUE)
+  out[idx_2025] <- parse_date_time(
+    x_chr[idx_2025],
+    orders = c("mdY IMSp", "mdY IMp"),
+    tz = tz_local,
+    quiet = TRUE
+  )
+
+  out
+}
+
+stops <- stops %>%
+  mutate(
+    scheduled_arrival_dt   = parse_dt_nycf(scheduled_arrival_dt, tz_local),
+    actual_arrival_dt      = parse_dt_nycf(actual_arrival_dt, tz_local),
+    scheduled_departure_dt = parse_dt_nycf(scheduled_departure_dt, tz_local),
+    actual_departure_dt    = parse_dt_nycf(actual_departure_dt, tz_local)
+  )
+```
+
+### Enforce last-stop departure as missing
+
+For each trip, the final stop should not have a meaningful departure timestamp. We explicitly set `actual_departure_dt` to missing for last stops to avoid incorrect dwell and segment calculations.
+
+```{r}
+stops <- stops %>%
+  arrange(trip_date, trip_no, route_no, route_direction, Stop_Sequence) %>%
+  mutate(
+    actual_departure_dt = if_else(
+      row_number() == n(),
+      as.POSIXct(NA, tz = tz_local),
+      actual_departure_dt
+    ),
+    .by = c(trip_date, trip_no, route_no, route_direction)
+  )
+```
+
+### Compute delay / segment / dwell metrics
+
+We compute arrival/departure delay relative to schedule, “water travel” time between consecutive stops (previous departure to current arrival), and dwell time at stops (arrival to departure). These derived metrics support distribution checks and late-rate analysis.
+
+```{r}
+stops <- stops %>%
+  select(-any_of("dept_variance_flag")) %>%
+  mutate(
+    arr_diff = as.numeric(difftime(actual_arrival_dt, scheduled_arrival_dt, units = "mins")),
+    dep_diff = as.numeric(difftime(actual_departure_dt, scheduled_departure_dt, units = "mins"))
+  ) %>%
+  arrange(trip_date, trip_no, route_no, route_direction, Stop_Sequence) %>%
+  mutate(
+    sched_water_min = as.numeric(difftime(scheduled_arrival_dt, lag(scheduled_departure_dt), units = "mins")),
+    act_water_min   = as.numeric(difftime(actual_arrival_dt,    lag(actual_departure_dt),    units = "mins")),
+    water_diff      = act_water_min - sched_water_min,
+    .by = c(trip_date, trip_no, route_no, route_direction)
+  ) %>%
+  mutate(
+    act_dwell_min = as.numeric(difftime(actual_departure_dt, actual_arrival_dt, units = "mins"))
+  )
+```
+
+### Define lateness / earliness flags
+
+We define Late arrival as `arr_diff` > 5 minutes and Early departure as `dep_diff` < -1 minute. These thresholds are used consistently throughout the reliability summaries and plots.
+
+```{r}
+stops <- stops %>%
+  mutate(
+    arr_status = case_when(
+      is.na(arr_diff) ~ NA_character_,
+      arr_diff > 5    ~ "Late",
+      TRUE            ~ "Not_Late"
+    ),
+    dep_status = case_when(
+      is.na(dep_diff) ~ NA_character_,
+      dep_diff < -1   ~ "Early",
+      TRUE            ~ "Not_Early"
+    )
+  )
+```
+
+### Join vessel capacity and compute load factor
+
+We join `Vessel_Capacity` using four keys (`trip_date`, `route_pattern`, `trip_no`, `stop_name`) and compute `load_factor = onboard / Vessel_Capacity`.
+
+```{r}
+ridership_capacity_lookup <- ridership %>%
+  transmute(
+    trip_date     = mdy(Date1),
+    route_pattern = as.character(Trip_Pattern),
+    trip_no       = as.character(Trip_ID),
+    stop_name     = as.character(Stop),
+    Vessel_Capacity
+  ) %>%
+  filter(!is.na(Vessel_Capacity)) %>%
+  distinct(trip_date, route_pattern, trip_no, stop_name, Vessel_Capacity)
+
+stops <- stops %>%
+  left_join(
+    ridership_capacity_lookup,
+    by = c(
+      "trip_date" = "trip_date",
+      "route_pattern" = "route_pattern",
+      "trip_no" = "trip_no",
+      "stop_name" = "stop_name"
+    )
+  ) %>%
+  mutate(load_factor = onboard / Vessel_Capacity)
+```
+
+### Define analysis sample
+
+We construct the final analysis table `dat` by applying the study period filter and removing the known problematic day/route subset. All EDA that follows is based on `dat` unless explicitly noted.
+
+```{r}
+dat0 <- stops %>%
+  filter(trip_date >= ymd("2024-01-01"),
+         trip_date <= ymd("2025-06-30"))
+
+removed_0425_sb <- dat0 %>%
+  filter(trip_date == ymd("2024-04-25") & route_no == "SB")
+
+dat <- dat0 %>%
+  filter(!(trip_date == ymd("2024-04-25") & route_no == "SB"))
+
+tibble(
+  min_trip_date = min(dat$trip_date, na.rm = TRUE),
+  max_trip_date = max(dat$trip_date, na.rm = TRUE),
+  n_rows_in_range_before_drop = nrow(dat0),
+  n_rows_removed_2024_04_25_SB = nrow(removed_0425_sb),
+  n_rows_final = nrow(dat)
+)
+```
+
+## EDA Tables
+
+### Derived tables
+
+We create two helper tables to support EDA at different aggregation levels:
+
+- `trip_tbl` summarizes one row per trip (useful for route/month/trip-start timing summaries).
+
+- `dist_dat` keeps stop-level records with convenience fields (e.g., stop_volume, nonnegative onboard/load factor) for distributions and late-rate calculations.
+
+```{r}
+trip_tbl <- dat %>%
+  mutate(trip_key = paste(trip_date, route_no, route_direction, trip_no, sep = "|")) %>%
+  group_by(trip_key, trip_date, route_no, route_direction) %>%
+  arrange(Stop_Sequence, .by_group = TRUE) %>%
+  summarise(
+    n_stops = n_distinct(stop_id),
+    trip_boardings  = sum(boarding_wake, na.rm = TRUE),
+    trip_alightings = sum(alightings_wake, na.rm = TRUE),
+    trip_total_events = sum(boarding_wake + alightings_wake, na.rm = TRUE),
+    trip_start_departure = first(actual_departure_dt),
+    is_weekday = first(is_weekday),
+    month = floor_date(first(trip_date), "month"),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    day_type = if_else(is_weekday, "Weekday", "Weekend"),
+    dep_hour = hour(trip_start_departure)
+  )
+
+dist_dat <- dat %>%
+  mutate(
+    boarding_wake = coalesce(boarding_wake, 0),
+    alightings_wake = coalesce(alightings_wake, 0),
+    stop_volume = boarding_wake + alightings_wake,
+    dwell_min = act_dwell_min,
+    onboard_nonneg = pmax(onboard, 0),
+    load_factor_nonneg = onboard_nonneg / Vessel_Capacity
+  )
+```
+
+### Route overview (Weekday vs Weekend)
+
+Route-level summaries compare weekday and weekend patterns to distinguish commute-driven demand from leisure and discretionary travel. We report total trips, total boardings, and average boardings per trip by route.
+
+```{r}
+route_weekpart <- trip_tbl %>%
+  group_by(route_no, day_type) %>%
+  summarise(
+    total_trips = n(),
+    total_boardings = sum(trip_boardings, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+route_avg_weekpart <- trip_tbl %>%
+  group_by(route_no, day_type) %>%
+  summarise(
+    avg_boardings_per_trip = mean(trip_boardings, na.rm = TRUE),
+    n_trips = n(),
+    .groups = "drop"
+  )
+
+route_summary_by_stops <- trip_tbl %>%
+  group_by(route_no, route_direction, n_stops) %>%
+  summarise(
+    n_trips = n(),
+    total_boardings = sum(trip_boardings, na.rm = TRUE),
+    avg_boardings_per_trip = total_boardings / n_trips,
+    .groups = "drop"
+  ) %>%
+  arrange(route_no, route_direction, n_stops)
+
+route_weekpart %>% arrange(desc(total_boardings))
+route_summary_by_stops
+```
+
+### Stop totals
+
+Stop totals aggregate boardings and alightings across the analysis period to identify the highest-activity stops. These rankings help interpret which terminals or transfer points dominate system usage.
+
+```{r}
+stop_totals <- dat %>%
+  group_by(stop_id, stop_name) %>%
+  summarise(
+    total_boardings = sum(boarding_wake, na.rm = TRUE),
+    total_alightings = sum(alightings_wake, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_boardings))
+
+stop_totals
+```
+
+### Monthly patterns
+
+Monthly summaries provide a simple view of seasonality and demand shifts over time. We summarize trips and ridership by month, split by weekday vs weekend, and also compute average boardings per trip.
+
+```{r}
+monthly_weekpart <- trip_tbl %>%
+  filter(month >= ymd("2024-01-01"), month <= ymd("2025-06-01")) %>%
+  group_by(month, day_type) %>%
+  summarise(
+    total_trips = n(),
+    total_boardings = sum(trip_boardings, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(month, day_type)
+
+monthly_avg_weekpart <- trip_tbl %>%
+  filter(month >= ymd("2024-01-01"), month <= ymd("2025-06-01")) %>%
+  group_by(month, day_type) %>%
+  summarise(
+    avg_boardings_per_trip = mean(trip_boardings, na.rm = TRUE),
+    n_trips = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(month, day_type)
+
+monthly_weekpart
+monthly_avg_weekpart
+```
+
+### Time-of-day patterns
+
+Hourly patterns are summarized in two ways: (1) trip-level departure hour (using each trip’s first observed departure time), and (2) stop-level departure hour (using each stop’s `actual_departure_dt`). This helps distinguish “when trips start” from “when stop activity occurs” across the day.
+
+```{r}
+hour_weekpart <- trip_tbl %>%
+  filter(!is.na(dep_hour)) %>%
+  mutate(dep_hour = as.integer(dep_hour)) %>%
+  group_by(dep_hour, day_type) %>%
+  summarise(
+    total_boardings = sum(trip_boardings, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(dep_hour, day_type)
+
+hour_breaks <- sort(unique(hour_weekpart$dep_hour))
+```
+
+```{r}
+stop_hour_weekpart <- dat %>%
+  filter(!is.na(actual_departure_dt)) %>%
+  mutate(
+    dep_hour = hour(actual_departure_dt),
+    day_type = if_else(is_weekday, "Weekday", "Weekend")
+  ) %>%
+  filter(!is.na(dep_hour)) %>%
+  group_by(dep_hour, day_type) %>%
+  summarise(
+    n_stop_departures = n(),
+    total_boardings = sum(boarding_wake, na.rm = TRUE),
+    avg_boardings_per_stop = total_boardings / n_stop_departures,
+    .groups = "drop"
+  ) %>%
+  arrange(dep_hour, day_type)
+
+stop_hour_breaks <- sort(unique(stop_hour_weekpart$dep_hour))
+
+stop_hour_weekpart
+```
+
+### Late rate patterns
+
+Late rate is the primary reliability outcome in this EDA. We first report overall shares of late arrivals and early departures, then summarize late rates by route, month, weekday vs weekend, and by departure hour.
+
+```{r}
+arr_status_tab <- dist_dat %>%
+  filter(!is.na(arr_status)) %>%
+  count(arr_status, name = "n") %>%
+  mutate(pct = n / sum(n)) %>%
+  arrange(desc(n))
+
+dep_status_tab <- dist_dat %>%
+  filter(!is.na(dep_status)) %>%
+  count(dep_status, name = "n") %>%
+  mutate(pct = n / sum(n)) %>%
+  arrange(desc(n))
+
+arr_status_tab
+dep_status_tab
+```
+
+```{r}
+late_dat <- dist_dat %>%
+  filter(!is.na(arr_status)) %>%
+  mutate(
+    is_late = arr_status == "Late",
+    month = floor_date(trip_date, "month"),
+    day_type = if_else(is_weekday, "Weekday", "Weekend"),
+    dep_hour = hour(actual_departure_dt)
+  )
+```
+
+```{r}
+late_by_route <- late_dat %>%
+  group_by(route_no) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(is_late),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pct_late))
+
+late_by_route %>% head(30)
+```
+
+```{r}
+late_by_month <- late_dat %>%
+  group_by(month, day_type) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(is_late),
+    .groups = "drop"
+  ) %>%
+  arrange(month, day_type)
+
+late_by_month
+```
+
+```{r}
+late_by_daytype <- late_dat %>%
+  group_by(day_type) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(is_late),
+    .groups = "drop"
+  )
+
+late_by_daytype
+```
+
+```{r}
+late_by_hour <- late_dat %>%
+  filter(!is.na(dep_hour)) %>%
+  group_by(dep_hour, day_type) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(is_late),
+    .groups = "drop"
+  ) %>%
+  arrange(dep_hour, day_type)
+
+late_hour_breaks <- sort(unique(late_by_hour$dep_hour))
+
+late_by_hour
+```
+
+## EDA Figures
+
+### Route-level figures
+
+These figures visualize route-level differences in service volume and demand. Weekday vs weekend splits highlight routes that are more commute-oriented versus leisure-oriented.
+
+```{r}
+ggplot(route_weekpart,
+       aes(x = reorder(route_no, total_trips, FUN = sum),
+           y = total_trips, fill = day_type)) +
+  geom_col(position = "stack") +
+  coord_flip() +
+  labs(x = "Route", y = "Total trips", fill = NULL,
+       title = "Total trips by route (Weekday vs Weekend)")
+```
+
+East River (ER) accounts for the largest share of trips in the system. Governors Island (GI) and Rockaway Rocket (RR) are seasonal services.
+
+```{r}
+ggplot(route_weekpart,
+       aes(x = reorder(route_no, total_boardings, FUN = sum),
+           y = total_boardings, fill = day_type)) +
+  geom_col(position = "stack") +
+  coord_flip() +
+  labs(x = "Route", y = "Total boardings", fill = NULL,
+       title = "Total ridership by route (Weekday vs Weekend)")
+```
+
+Total boardings are highest on East River (ER) and Astoria (AS).
+
+```{r}
+ggplot(route_avg_weekpart,
+       aes(x = reorder(route_no, avg_boardings_per_trip, FUN = max),
+           y = avg_boardings_per_trip, fill = day_type)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  coord_flip() +
+  labs(x = "Route", y = "Avg boardings per trip", fill = NULL,
+       title = "Average ridership per trip by route (Weekday vs Weekend)")
+```
+
+Average boardings per trip tend to be higher on weekends than weekdays. For the seasonal routes, weekday averages can appear high because weekday service days are holiday/peak-operation days.
+
+### Monthly figures
+
+Monthly charts provide a high-level view of seasonality and temporal shifts in trips, total ridership, and average ridership per trip.
+
+```{r}
+ggplot(monthly_weekpart, aes(x = month, y = total_trips, fill = day_type)) +
+  geom_col(position = "stack") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y-%m") +
+  labs(x = NULL, y = "Trips", fill = NULL,
+       title = "Monthly trips (Weekday vs Weekend)") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+Weekday trip volumes are relatively stable month-to-month. Weekend trips show stronger seasonality, increasing in summer and decreasing in winter.
+
+```{r}
+ggplot(monthly_weekpart, aes(x = month, y = total_boardings, fill = day_type)) +
+  geom_col(position = "stack") +
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y-%m") +
+  labs(x = NULL, y = "Total boardings", fill = NULL,
+       title = "Monthly ridership (Weekday vs Weekend)") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+Ridership varies much more strongly by season than trips do, especially on weekends.
+
+```{r}
+ggplot(monthly_avg_weekpart, aes(x = month, y = avg_boardings_per_trip, fill = day_type)) +
+  geom_col(position = position_dodge(width = 25), width = 25) +
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y-%m") +
+  labs(x = NULL, y = "Avg boardings per trip", fill = NULL,
+       title = "Average ridership per trip by month (Weekday vs Weekend)") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+Weekday average boardings per trip change more smoothly over the year, while weekend values exhibit sharper peaks.
+
+### Time-of-day figures
+
+Time-of-day plots show how ridership and activity vary across hours. Trip-level and stop-level views are shown separately to capture differences between trip start times and stop departure activity.
+
+```{r}
+ggplot(hour_weekpart, aes(x = dep_hour, y = total_boardings, fill = day_type)) +
+  geom_col(position = "stack") +
+  scale_x_continuous(breaks = hour_breaks) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Total ridership by trip departure hour (Weekday vs Weekend)",
+       x = "Departure hour", y = "Total boardings", fill = NULL)
+```
+
+```{r}
+ggplot(stop_hour_weekpart, aes(x = dep_hour, y = n_stop_departures, fill = day_type)) +
+  geom_col(position = "stack") +
+  scale_x_continuous(breaks = stop_hour_breaks) +
+  labs(x = "Departure hour", y = "Stop departures", fill = NULL,
+       title = "Stop departures by hour (Weekday vs Weekend)")
+```
+
+```{r}
+ggplot(stop_hour_weekpart, aes(x = dep_hour, y = total_boardings, fill = day_type)) +
+  geom_col(position = "stack") +
+  scale_x_continuous(breaks = stop_hour_breaks) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = "Departure hour", y = "Total boardings", fill = NULL,
+       title = "Total boardings by stop departure hour (Weekday vs Weekend)")
+```
+
+```{r}
+ggplot(stop_hour_weekpart, aes(x = dep_hour, y = avg_boardings_per_stop, fill = day_type)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.75) +
+  scale_x_continuous(breaks = stop_hour_breaks) +
+  labs(x = "Departure hour", y = "Avg boardings per stop", fill = NULL,
+       title = "Average boardings per stop by hour (Weekday vs Weekend)")
+```
+
+On weekdays, stop activity shows morning and evening peaks consistent with commuting patterns. On weekends, higher activity is concentrated from midday through early evening.
+
+### Distributions
+
+Distribution plots are used as diagnostics to understand skew, outliers, and reasonable ranges for modeling (e.g., passenger counts, onboard/load factor, delay components, and dwell times). These figures are intended to guide feature engineering and robustness checks.
+
+```{r}
+ggplot(dist_dat %>% filter(!is.na(stop_volume), stop_volume >= 0, stop_volume <= 350),
+       aes(x = stop_volume)) +
+  geom_histogram(bins = 50) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of stop activity (board_wake + alight_wake)",
+       x = "stop_volume", y = "Count")
+```
+
+Stop activity is highly right-skewed with a long tail: most stops have relatively low combined boardings/alightings, while a small number of high-activity stops drive the upper tail. The majority of observations are below ~50 per stop.
+
+```{r}
+ggplot(dist_dat %>% filter(boarding_wake >= 0, boarding_wake <= 350),
+       aes(x = boarding_wake)) +
+  geom_histogram(bins = 60) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of boarding_wake",
+       x = "boarding_wake", y = "Count")
+
+ggplot(dist_dat %>% filter(alightings_wake >= 0, alightings_wake <= 350),
+       aes(x = alightings_wake)) +
+  geom_histogram(bins = 60) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of alightings_wake",
+       x = "alightings_wake", y = "Count")
+```
+
+```{r}
+ggplot(dist_dat %>% filter(!is.na(lbr) & lbr > 0),
+       aes(x = lbr)) +
+  geom_histogram(bins = 30) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of left-behinds (positive values only)",
+       x = "lbr", y = "Count")
+```
+
+```{r}
+ggplot(dist_dat %>% filter(!is.na(onboard_nonneg), onboard_nonneg <= 400),
+       aes(x = onboard_nonneg)) +
+  geom_histogram(bins = 60) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of onboard (negative set to 0)",
+       x = "onboard_nonneg", y = "Count")
+
+ggplot(dist_dat %>% filter(!is.na(load_factor_nonneg), load_factor_nonneg <= 1.5),
+       aes(x = load_factor_nonneg)) +
+  geom_histogram(bins = 60) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of load factor (negative set to 0)",
+       x = "load_factor_nonneg", y = "Count")
+```
+
+Onboard and load factor are also long-tailed, with most observations at low occupancy (e.g., load factor < 0.25). A small secondary peak at full capacity indicates sold-out trips.
+
+```{r}
+arr_diff_bins <- dat %>%
+  filter(!is.na(arr_diff), arr_diff >= -20, arr_diff <= 75) %>%
+  mutate(bin_5min = floor(arr_diff / 5) * 5) %>%
+  count(bin_5min, name = "n") %>%
+  arrange(bin_5min) %>%
+  mutate(
+    pct = n / sum(n),
+    cum_pct = cumsum(pct)
+  )
+
+arr_diff_bins
+```
+
+At the stop level, 8.4% of stops exceed the late threshold, and 2.5% are excessively late. Trip-level late rates will be higher if a trip is labeled late when any stop on that trip is late.
+
+```{r}
+ggplot(dist_dat %>% filter(!is.na(arr_diff)),
+       aes(x = arr_diff)) +
+  geom_histogram(binwidth = 2) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "arr_diff distribution",
+       x = "arr_diff (min)", y = "Count")
+
+ggplot(dist_dat %>% filter(!is.na(dep_diff)),
+       aes(x = dep_diff)) +
+  geom_histogram(binwidth = 2) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "dep_diff distribution",
+       x = "dep_diff (min)", y = "Count")
+
+ggplot(dist_dat %>% filter(!is.na(water_diff)),
+       aes(x = water_diff)) +
+  geom_histogram(binwidth = 2) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "water_diff distribution",
+       x = "water_diff (min)", y = "Count")
+
+ggplot(dist_dat %>% filter(!is.na(act_dwell_min), act_dwell_min >= 0, act_dwell_min <= 60),
+       aes(x = act_dwell_min)) +
+  geom_histogram(binwidth = 1) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "act_dwell_min distribution",
+       x = "act_dwell_min (min)", y = "Count")
+```
+
+Because scheduled arrival and departure times are identical in the raw schedule data (i.e., no scheduled dwell), arrivals can appear slightly early while departures appear slightly late. In practice, realized dwell time helps reconcile these differences, and dwell times cluster in 3 to 5-minute range.
+
+### Late-rate figures
+
+These figures visualize how late rate varies across routes, months, and hours. The goal is to highlight patterns in reliability rather than interpret individual delay magnitudes.
+
+```{r}
+ggplot(late_by_route, aes(x = reorder(route_no, pct_late), y = pct_late)) +
+  geom_col() +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Late rate by route",
+       x = "Route", y = "Share Late (arr_status)")
+```
+
+Rockaway (RW) has the highest late rate by a wide margin relative to other routes. It is the longest route and more exposed to high seasonal peaks and variable marine conditions.
+
+```{r}
+ggplot(late_by_month, aes(x = month, y = pct_late, color = day_type)) +
+  geom_line() +
+  geom_point() +
+  scale_x_date(date_breaks = "1 month", date_labels = "%Y-%m") +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Late rate by month",
+       x = NULL, y = "Share Late", color = NULL) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+Late rates are generally higher in summer than winter, and higher on weekends than weekdays.
+
+```{r}
+ggplot(late_by_hour, aes(x = dep_hour, y = pct_late, color = day_type)) +
+  geom_line() +
+  geom_point() +
+  scale_x_continuous(breaks = late_hour_breaks) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Late rate by stop departure hour",
+       x = "Hour", y = "Share Late", color = NULL)
+```
+
+Late rates tend to peak in the afternoon.
+
+### Late propagation proxy figures
+
+To proxy delay propagation along a trip, we relate a stop’s lateness to conditions at the previous stop. We show late rates binned by previous-stop dwell time and by previous-stop passenger activity (`boarding_wake + alightings_wake`).
+
+```{r}
+prev_dat <- dist_dat %>%
+  arrange(trip_date, route_no, route_direction, trip_no, Stop_Sequence) %>%
+  group_by(trip_date, route_no, route_direction, trip_no) %>%
+  mutate(
+    prev_dwell_min   = lag(dwell_min),
+    prev_stop_volume = lag(stop_volume)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(arr_status),
+         !is.na(prev_dwell_min), prev_dwell_min >= 0, prev_dwell_min <= 60,
+         !is.na(prev_stop_volume), prev_stop_volume >= 0)
+```
+
+```{r}
+prev_dwell_late_tbl <- prev_dat %>%
+  mutate(
+    prev_dwell_bin = cut(prev_dwell_min,
+                         breaks = c(0, 1, 2, 3, 5, 8, 12, 16, Inf),
+                         include.lowest = TRUE)
+  ) %>%
+  group_by(prev_dwell_bin) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(arr_status == "Late", na.rm = TRUE),
+    .groups = "drop"
+  )
+
+prev_dwell_late_tbl
+
+ggplot(prev_dwell_late_tbl, aes(x = prev_dwell_bin, y = pct_late)) +
+  geom_col() +
+  geom_text(aes(label = paste0("n=", scales::comma(n))),
+            vjust = -0.3, size = 3) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.12))) +
+  labs(title = "Late rate by previous-stop dwell time bin",
+       x = "Previous stop dwell time bin (min)", y = "Late rate (current stop)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+Within typical dwell time ranges, the relationship between previous-stop dwell and current-stop late rate is relatively weak. Once previous-stop dwell becomes unusually long (e.g., > ~8 minutes), late rates increase sharply.
+
+```{r}
+prev_vol_late_tbl <- prev_dat %>%
+  mutate(
+    prev_vol_bin = cut(prev_stop_volume,
+                       breaks = c(0, 10, 20, 30, 50, 100, 150, 200, Inf),
+                       include.lowest = TRUE)
+  ) %>%
+  group_by(prev_vol_bin) %>%
+  summarise(
+    n = n(),
+    pct_late = mean(arr_status == "Late", na.rm = TRUE),
+    .groups = "drop"
+  )
+
+prev_vol_late_tbl
+
+ggplot(prev_vol_late_tbl, aes(x = prev_vol_bin, y = pct_late)) +
+  geom_col() +
+  geom_text(aes(label = paste0("n=", scales::comma(n))),
+            vjust = -0.3, size = 3) +
+  scale_y_continuous(labels = scales::percent_format(),
+                     expand = expansion(mult = c(0, 0.12))) +
+  labs(title = "Late rate by previous-stop activity bin (board_wake + alight_wake)",
+       x = "Previous stop activity bin", y = "Late rate (current stop)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+When previous-stop activity is moderate, late rates change gradually; beyond higher activity levels (e.g., > ~50), late rates rise more noticeably.
+
+### Direction comparison figures (NB vs SB)
+
+Directional comparisons (`NB` vs `SB`) are computed at the trip level and summarized by departure hour. Faceted plots by route help identify persistent directional asymmetry in both demand and reliability, separately for weekdays and weekends.
+
+```{r}
+trip_dir_tbl <- dat %>%
+  filter(route_direction %in% c("NB", "SB")) %>%
+  arrange(trip_date, route_no, route_direction, trip_no, Stop_Sequence) %>%
+  group_by(trip_date, route_no, route_direction, trip_no) %>%
+  summarise(
+    is_weekday = first(is_weekday),
+    trip_boardings = sum(boarding_wake, na.rm = TRUE),
+    trip_dep_dt = first(actual_departure_dt),
+    trip_late_rate = mean(arr_status == "Late", na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    day_type = if_else(is_weekday, "Weekday", "Weekend"),
+    dep_hour = hour(trip_dep_dt)
+  ) %>%
+  filter(!is.na(dep_hour))
+
+dir_hour_summary <- trip_dir_tbl %>%
+  group_by(route_no, route_direction, dep_hour, day_type) %>%
+  summarise(
+    n_trips = n(),
+    avg_boardings_per_trip = mean(trip_boardings, na.rm = TRUE),
+    avg_late_rate = mean(trip_late_rate, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+dir_hour_summary %>% head(30)
+
+dir_hour_breaks <- sort(unique(dir_hour_summary$dep_hour))
+```
+
+```{r}
+ggplot(dir_hour_summary %>% filter(day_type == "Weekday"),
+       aes(x = dep_hour, y = avg_boardings_per_trip, color = route_direction)) +
+  geom_line() +
+  geom_point(size = 1) +
+  facet_wrap(~ route_no, scales = "free_y") +
+  scale_x_continuous(breaks = dir_hour_breaks) +
+  labs(title = "Weekday: Avg boardings per trip by departure hour (NB vs SB)",
+       x = "Departure hour", y = "Avg boardings per trip", color = NULL)
+```
+
+```{r}
+ggplot(dir_hour_summary %>% filter(day_type == "Weekday"),
+       aes(x = dep_hour, y = avg_late_rate, color = route_direction)) +
+  geom_line() +
+  geom_point(size = 1) +
+  facet_wrap(~ route_no, scales = "free_y") +
+  scale_x_continuous(breaks = dir_hour_breaks) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Weekday: Trip late rate by departure hour (NB vs SB)",
+       x = "Departure hour", y = "Late rate (share of stops Late within trip)", color = NULL)
+```
+
+```{r}
+ggplot(dir_hour_summary %>% filter(day_type == "Weekend"),
+       aes(x = dep_hour, y = avg_boardings_per_trip, color = route_direction)) +
+  geom_line() +
+  geom_point(size = 1) +
+  facet_wrap(~ route_no, scales = "free_y") +
+  scale_x_continuous(breaks = dir_hour_breaks) +
+  labs(title = "Weekend: Avg boardings per trip by departure hour (NB vs SB)",
+       x = "Departure hour", y = "Avg boardings per trip", color = NULL)
+```
+
+```{r}
+ggplot(dir_hour_summary %>% filter(day_type == "Weekend"),
+       aes(x = dep_hour, y = avg_late_rate, color = route_direction)) +
+  geom_line() +
+  geom_point(size = 1) +
+  facet_wrap(~ route_no, scales = "free_y") +
+  scale_x_continuous(breaks = dir_hour_breaks) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title = "Weekend: Trip late rate by departure hour (NB vs SB)",
+       x = "Departure hour", y = "Late rate (share of stops Late within trip)", color = NULL)
+```
+
+Several routes show directional asymmetry consistent with tidal commute patterns, where demand differs by direction at certain times. For some routes, one direction exhibits consistently higher late rates than the other, suggesting operational constraints rather than demand alone.
+
+### Export outputs
+
+The final step exports the main stop-level analysis sample `dat` to the project output directory as a compressed CSV (for sharing) and an RDS file (to preserve data types for reloads).
+
+```{r}
+export_dir <- file.path(base_dir, "stop_eda")
+dir.create(export_dir, recursive = TRUE, showWarnings = FALSE)
+
+readr::write_csv(dat, file.path(export_dir, "dat_stops_2024-01-01_2025-06-30_drop0425SB.csv.gz"))
+saveRDS(dat, file.path(export_dir, "dat_stops_2024-01-01_2025-06-30_drop0425SB.rds"))
+```
