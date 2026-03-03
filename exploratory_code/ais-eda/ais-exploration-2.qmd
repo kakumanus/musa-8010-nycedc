@@ -1,0 +1,15 @@
+---
+title: "AIS Data Exploration #1"
+format: html
+author: Sujan Kakumanu
+---
+
+```{r setup}
+#| message: false
+#| warning: false
+
+options(scipen = 999)
+
+if(!require(pacman)){install.packages("pacman"); library(pacman, quietly = T)}
+p_load(tidyverse, sf, viridis, lubridate)
+```
