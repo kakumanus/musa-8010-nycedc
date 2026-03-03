@@ -21,7 +21,7 @@ Actual Arrival − Scheduled Arrival
 ## Delay Rate by Route / Month / Hour
 
 
-```{r set-up, eval=FALSE}
+```{r set-up}
 
 
 library(dplyr)
