@@ -21,7 +21,9 @@ Actual Arrival − Scheduled Arrival
 ## Delay Rate by Route / Month / Hour
 
 
-```{r set-up}
+```{r set-up, eval=FALSE}
+
+
 library(dplyr)
 library(lubridate)
 library(ggplot2)
@@ -29,13 +31,13 @@ library(scales)
 library(readr)
 library(stringr)
 
-stops_2024 <- read.csv("../data-selected/NYCF_data_compiled/stop_data/NYCF_stop_data_2024.csv")
-stops_2025 <- read.csv("../data-selected/NYCF_data_compiled/stop_data/NYCF_stop_data_2025.01_06.csv")
+stops_2024 <- read.csv("E:/MUSA/8010 practicum/data-selected/NYCF_data_compiled/stop_data/NYCF_stop_data_2024.csv")
+stops_2025 <- read.csv("E:/MUSA/8010 practicum/data-selected/NYCF_data_compiled/stop_data/NYCF_stop_data_2025.01_06.csv")
 
 stops <- bind_rows(stops_2024, stops_2025)
 
-trip_2024 <- read.csv("../data-selected/NYCF_data_compiled/trip_data/NYCF_trip_data_2024.csv")
-trip_2025 <- read.csv("../data-selected/NYCF_data_compiled/trip_data/NYCF_trip_data_2025.01_06.csv")
+trip_2024 <- read.csv("E:/MUSA/8010 practicum/data-selected/NYCF_data_compiled/trip_data/NYCF_trip_data_2024.csv")
+trip_2025 <- read.csv("E:/MUSA/8010 practicum/data-selected/NYCF_data_compiled/trip_data/NYCF_trip_data_2025.01_06.csv")
 
 trip_2024 <- trip_2024 %>% janitor::clean_names()
 trip_2025 <- trip_2025 %>% janitor::clean_names()
