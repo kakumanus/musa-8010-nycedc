@@ -1,5 +1,5 @@
 ---
-title: "AIS Data Exploration #1"
+title: "AIS Data Exploration"
 format: html
 author: Sujan Kakumanu
 ---
@@ -39,26 +39,26 @@ US Coast Guard AIS Description: https://www.navcen.uscg.gov/automatic-identifica
   - heading: true heading in degrees (the direction of the bow w.r.t true north)
   - latitude; longitude: in decimal degree
   
-## Distributions of Select Variables
+## Distributions of Select Variables (EDA Part 1)
 
 ### Data loading
 
 For this initial exploration, I want to trim the data down to a specific time frame to help with analysis speed. I picked a Wednesday in June to hopefully get a typical working day of data in the harbor.
 ```{r load-data}
-#| eval: false # Do not run this block. Only run once to generate the trimmed csv
+#| eval: false
 
 # Loading the data. Trimming it to Wednesday June 4th for easier analysis at this point.
 ais_06_2025 <- read.csv("AIS_2025.06.csv")
 
-ais_06_2025_trimmed <- ais_06_2025 %>%
+ais_06_16_2025_trimmed <- ais_06_2025 %>%
   mutate(base_date_time = ymd_hms(base_date_time)) %>%
-  filter(date(base_date_time) == ymd("2025-06-04"))
+  filter(date(base_date_time) == ymd("2025-06-16"))
 
-write.csv(ais_06_2025_trimmed, "AIS_2025_06_04_filtered.csv", row.names = FALSE)
+write.csv(ais_06_16_2025_trimmed, "AIS_2025_06_16_filtered.csv", row.names = FALSE)
 ```
 
 ```{r load-processed-data}
-ais_06_2025_trimmed <- read.csv("AIS_2025_06_04_filtered.csv")
+ais_06_16_2025_trimmed <- read.csv("AIS_2025_06_16_filtered.csv")
 ```
 
 ### Frequency of Vessel Types
@@ -66,10 +66,10 @@ Below is a visual of how many pings certain vessel types are sending.
 *Disclaimer*: We probably need to explore the relation between vessel type and frequency of pings (some vehicles are required to transmit more frequently).
 
 ```{r}
-ggplot(ais_06_2025_trimmed, aes(x = as.factor(vessel_type))) +
+ggplot(ais_06_16_2025_trimmed, aes(x = as.factor(vessel_type))) +
   geom_bar(fill = "steelblue") +
   labs(title = "Frequency of Vessel Types",
-       subtitle = "June 4, 2025 - NY Harbor",
+       subtitle = "June 16, 2025 - NY Harbor",
        x = "Vessel Type Code",
        y = "Number of Pings") +
   theme_minimal()
@@ -83,7 +83,7 @@ Most Common Vessel codes:
 
 ### Vessel Size
 ```{r}
-ggplot(ais_06_2025_trimmed, aes(x = length)) +
+ggplot(ais_06_16_2025_trimmed, aes(x = length)) +
   geom_histogram(binwidth = 10, fill = "steelblue", color = "white") +
   labs(title = "Distribution of Vessel Lengths",
        x = "Length (meters)",
@@ -94,7 +94,7 @@ ggplot(ais_06_2025_trimmed, aes(x = length)) +
 ### Traffic Volume
 ```{r}
 # Note that I ignore docking/docked ships. Noticed a lot of zeros
-ais_june_04 %>%
+ais_06_16_2025_trimmed %>%
   filter(sog > 0.5) %>% 
   ggplot(aes(x = sog)) +
   geom_histogram(binwidth = 1, fill = "darkblue", color = "white") +
@@ -103,4 +103,217 @@ ais_june_04 %>%
        x = "Speed Over Ground (knots)",
        y = "Number of Pings") +
   theme_minimal()
+```
+
+Next steps:
+- Spatial distribution in the harbor
+- Fishnet grid over the course of the day?
+- Vessel and speed distributions
+- June 16th to 22nd
+
+### Spatial Distribution in the Harbor
+
+```{r}
+ais_sf <- ais_06_16_2025_trimmed %>%
+  drop_na(longitude, latitude) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+# 'cellsize' is in degrees (~0.01 is roughly 1km)
+grid <- st_make_grid(ais_sf, cellsize = 0.01, square = TRUE) %>%
+  st_sf() %>%
+  mutate(grid_id = row_number())
+
+grid_counts <- grid %>%
+  st_join(ais_sf) %>%
+  group_by(grid_id) %>%
+  summarise(ping_count = n()) %>%
+  filter(ping_count > 0) # Only keep cells with activity
+
+ggplot(grid_counts) +
+  geom_sf(aes(fill = ping_count), color = NA) +
+  scale_fill_viridis_c(option = "inferno", trans = "log10") + # Log scale helps see quiet lanes
+  labs(title = "AIS Fishnet: Vessel Density",
+       subtitle = "NY Harbor - June 16, 2025",
+       fill = "Ping Count (Log10)") +
+  theme_minimal()
+```
+
+```{r}
+library(sf)
+library(tidyverse)
+library(viridis)
+
+# (Lower Manhattan & East River)
+manhattan_bbox <- st_bbox(c(xmin = -74.03, xmax = -73.94, ymin = 40.69, ymax = 40.76), 
+                          crs = st_crs(4326))
+
+ais_manhattan <- ais_sf %>%
+  st_crop(manhattan_bbox)
+
+# 0.001 degrees is roughly 110 meters. 
+fine_grid <- st_make_grid(ais_manhattan, cellsize = 0.001, square = TRUE) %>%
+  st_sf() %>%
+  mutate(grid_id = row_number())
+
+fine_grid_counts <- fine_grid %>%
+  st_join(ais_manhattan) %>%
+  group_by(grid_id) %>%
+  summarise(ping_count = n()) %>%
+  filter(ping_count > 0)
+
+ggplot(fine_grid_counts) +
+  geom_sf(aes(fill = ping_count), color = NA) +
+  scale_fill_viridis_c(option = "magma", trans = "log10") +
+  labs(title = "High-Resolution Vessel Density",
+       subtitle = "Lower Manhattan & East River (June 16, 2025)",
+       fill = "Ping Count (Log10)") +
+  theme_minimal() +
+  theme(panel.grid = element_blank())
+```
+## Distributions and Spatial Analysis (EDA Part II)
+In preparation for Presentation 1, and to do more spatial analysis, I will focus on the subset of data from June 16th to June 22nd 2025. This is during the more busy summer months, but while school is in session. It also includes a state and city holiday (Juneteenth).
+
+### Data loading
+
+For this initial exploration, I want to trim the data down to a specific time frame to help with analysis speed. I picked a Wednesday in June to hopefully get a typical working day of data in the harbor.
+```{r load-data-2}
+#| eval: false
+
+# Loading the data. Trimming it to Wednesday June 4th for easier analysis at this point.
+ais_06_2025 <- read.csv("AIS_2025.06.csv")
+
+ais_06_16to22_2025_trimmed <- ais_06_2025 %>%
+  mutate(base_date_time = ymd_hms(base_date_time)) %>%
+  filter(date(base_date_time) >= ymd("2025-06-16") & date(base_date_time) <= ymd("2025-06-22"))
+
+write.csv(ais_06_16to22_2025_trimmed, "AIS_2025_06_16to22_filtered.csv", row.names = FALSE)
+```
+
+```{r load-processed-data-2}
+ais_06_16to22_2025_trimmed <- read.csv("AIS_2025_06_16to22_filtered.csv")
+```
+
+### Fishnet Visualization for Week in June
+```{r}
+ais_processed <- ais_06_16to22_2025_trimmed %>%
+  mutate(
+    base_date_time = ymd_hms(base_date_time),
+    date = as.Date(base_date_time),
+    hour = hour(base_date_time)
+  ) %>%
+  filter(
+    date %in% ymd(c("2025-06-16", "2025-06-19", "2025-06-21")),
+    hour %in% c(8, 12, 16, 20)
+  ) %>%
+  drop_na(longitude, latitude) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326)
+
+
+create_daily_fishnet <- function(sf_data, target_date, title_label) {
+  day_sf <- sf_data %>% filter(date == ymd(target_date))
+  
+  grid <- st_make_grid(day_sf, cellsize = 0.005, square = TRUE) %>%
+    st_sf() %>%
+    mutate(grid_id = row_number())
+  
+  # Aggregate pings into the grid by hour
+  grid_counts <- grid %>%
+    st_join(day_sf) %>%
+    filter(!is.na(mmsi)) %>%
+    group_by(grid_id, hour) %>%
+    summarise(ping_count = n(), .groups = "drop")
+  
+  ggplot(grid_counts) +
+    geom_sf(aes(fill = ping_count), color = NA) +
+    scale_fill_viridis_c(option = "inferno", trans = "log10") +
+    facet_wrap(~hour, labeller = as_labeller(c(
+      "8" = "08:00 AM", 
+      "12" = "12:00 PM", 
+      "16" = "04:00 PM", 
+      "20" = "08:00 PM"
+    ))) +
+    labs(
+      title = title_label,
+      subtitle = paste("Date:", target_date),
+      fill = "Ping Count (Log Scale)",
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text = element_blank(),
+      panel.grid = element_blank(),
+      strip.background = element_rect(fill = "grey90", color = NA)
+    )
+}
+
+monday_plot <- create_daily_fishnet(ais_processed, "2025-06-16", "Monday Traffic Density")
+print(monday_plot)
+
+holiday_plot <- create_daily_fishnet(ais_processed, "2025-06-19", "Juneteenth Holiday Traffic Density")
+print(holiday_plot)
+
+saturday_plot <- create_daily_fishnet(ais_processed, "2025-06-21", "Saturday Traffic Density")
+print(saturday_plot)
+```
+
+```{r}
+
+ais_processed_zoom <- ais_06_16to22_2025_trimmed %>%
+  mutate(
+    base_date_time = ymd_hms(base_date_time),
+    date = as.Date(base_date_time),
+    hour = hour(base_date_time)
+  ) %>%
+  filter(
+    date %in% ymd(c("2025-06-16", "2025-06-19", "2025-06-21")),
+    hour %in% c(8, 12, 16, 20)
+  ) %>%
+  drop_na(longitude, latitude) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_crop(st_bbox(c(xmin = -74.03, xmax = -73.94, ymin = 40.69, ymax = 40.76), crs = 4326))
+
+
+create_zoom_fishnet <- function(sf_data, target_date, title_label) {
+  
+  day_sf <- sf_data %>% filter(date == ymd(target_date))
+  
+  grid <- st_make_grid(day_sf, cellsize = 0.001, square = TRUE) %>%
+    st_sf() %>%
+    mutate(grid_id = row_number())
+  
+  grid_counts <- grid %>%
+    st_join(day_sf) %>%
+    filter(!is.na(mmsi)) %>%
+    group_by(grid_id, hour) %>%
+    summarise(ping_count = n(), .groups = "drop")
+  
+  ggplot(grid_counts) +
+    geom_sf(aes(fill = ping_count), color = NA) +
+    scale_fill_viridis_c(option = "inferno", trans = "log10") +
+    facet_wrap(~hour, labeller = as_labeller(c(
+      "8" = "08:00 AM", 
+      "12" = "12:00 PM", 
+      "16" = "04:00 PM", 
+      "20" = "08:00 PM"
+    ))) +
+    labs(
+      title = title_label,
+      subtitle = paste("Lower Manhattan - Date:", target_date),
+      fill = "Ping Count (Log Scale)"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text = element_blank(),
+      panel.grid = element_blank(),
+      strip.background = element_rect(fill = "grey90", color = NA)
+    )
+}
+
+zoom_monday <- create_zoom_fishnet(ais_processed_zoom, "2025-06-16", "Lower Manhattan: Monday Workday")
+print(zoom_monday)
+
+zoom_holiday <- create_zoom_fishnet(ais_processed_zoom, "2025-06-19", "Lower Manhattan: Juneteenth Holiday")
+print(zoom_holiday)
+
+zoom_saturday <- create_zoom_fishnet(ais_processed_zoom, "2025-06-21", "Lower Manhattan: Saturday Weekend")
+print(zoom_saturday)
 ```
