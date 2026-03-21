@@ -1,5 +1,5 @@
 ---
-title: "AIS Data Exploration #1"
+title: "AIS Data Exploration #2"
 format: html
 author: Sujan Kakumanu
 ---
@@ -13,3 +13,296 @@ options(scipen = 999)
 if(!require(pacman)){install.packages("pacman"); library(pacman, quietly = T)}
 p_load(tidyverse, sf, viridis, lubridate)
 ```
+
+## Overview
+
+This document builds on the initial AIS exploration with one key change: 
+instead of counting **pings** (raw transmissions) per grid cell, we count **unique vessels** 
+(distinct MMSIs). This matters because a slow-moving tanker anchored for hours generates 
+far more pings than a fast tug crossing the harbor — ping count reflects dwell time, not 
+traffic volume. Vessel count is a more honest measure of how busy a given area of the 
+harbor actually is.
+
+## Data Loading
+
+Same June 16–22 subset as before. We re-parse the timestamp and retain key columns.
+```{r load-data}
+ais <- read.csv("AIS_2025_06_16_filtered.csv") %>%
+  mutate(
+    base_date_time = ymd_hms(base_date_time),
+    date = as.Date(base_date_time),
+    hour = hour(base_date_time)
+  )
+```
+
+## Building a Stable Fishnet
+
+Change from previous exploration: we define the fishnet **once** and reuse 
+it throughout. We want `grid_id` to refer to the same cell across all dates and time 
+windows — a requirement for joining traffic features to our modeling data later.
+
+We also project to **UTM Zone 18N (EPSG:32618)**, a meter-based CRS appropriate for 
+New York Harbor. This makes cell sizes interpretable: we use 200m cells for the 
+harbor-wide view.
+
+Changes can be made to the cell size for performance and info tradeoffs.
+
+```{r build-fishnet}
+ais_sf <- ais %>%
+  filter(sog > 0.5) %>%
+  drop_na(longitude, latitude) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(32618)
+
+fishnet <- ais_sf %>%
+  st_bbox() %>%
+  st_as_sfc() %>%
+  st_make_grid(cellsize = 200, square = TRUE) %>%
+  st_sf() %>%
+  mutate(grid_id = row_number())
+```
+
+## Aggregating to Vessel Count
+
+As in exploration 1, filter to moving vessels (SOG > 0.5 knots) to exclude anchored or docked ships.
+Count **distinct MMSIs** per cell per hour — not raw pings.
+```{r aggregate-vessel-count}
+traffic <- fishnet %>%
+  st_join(ais_sf) %>%
+  filter(!is.na(mmsi)) %>%
+  group_by(grid_id, date, hour) %>%
+  summarise(
+    vessel_count = n_distinct(mmsi),
+    ping_count = n(),
+    .groups = "drop"
+  )
+```
+
+## Ping Count vs. Vessel Count
+This is a quick sanity check to make sure we're on the right path.
+Most grid cells have more pings than unique vessels, which is exactly what we expect. 
+Vessels passing through a cell generate multiple pings.
+```{r ping-vs-vessel}
+traffic %>%
+  st_drop_geometry() %>%
+  group_by(grid_id) %>%
+  summarise(
+    total_pings = sum(ping_count),
+    total_vessels = sum(vessel_count),
+    .groups = "drop"
+  ) %>%
+  filter(total_pings > 0) %>%
+  ggplot(aes(x = total_pings, y = total_vessels)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_abline(linetype = "dashed", color = "red") +
+  labs(
+    title = "Ping Count vs. Vessel Count per Grid Cell",
+    x = "Total Pings",
+    y = "Total Unique Vessels"
+  ) +
+  theme_minimal()
+```
+
+## Harbor-Wide Vessel Density
+
+Aggregated across the full day to show overall traffic patterns in the harbor.
+Note the use of a log scale — vessel counts vary dramatically across cells, and
+a log transformation allows us to see variation in both busy and quiet areas.
+Log10 is used for better interpretability...
+
+```{r map-harbor-density}
+traffic_day <- traffic %>%
+  st_drop_geometry() %>%
+  group_by(grid_id) %>%
+  summarise(vessel_count = sum(vessel_count), .groups = "drop")
+
+fishnet %>%
+  left_join(traffic_day, by = "grid_id") %>%
+  ggplot() +
+  geom_sf(aes(fill = vessel_count), color = NA) +
+  scale_fill_viridis_c(option = "inferno", trans = "log10", na.value = "grey90") +
+  labs(
+    title = "Harbor-Wide Vessel Density (Unique Vessels)",
+    subtitle = "NY Harbor — June 16, 2025",
+    fill = "Vessel Count (Log10)"
+  ) +
+  theme_minimal() +
+  theme(axis.text = element_blank(), panel.grid = element_blank())
+```
+Here, we can see some clear patterns that are validated by our domain knowledge. The East River shows a lot of traffic in a tight corridor. Same with the Hudson River, flowing into the area north of the Staten Island.
+
+
+## Sample Stop-Level Traffic Exploration
+
+Just to explore, I take 3 major ferry stops (hunters point south isn't "major", but just an interesting one):
+Question: **how does vessel traffic in the surrounding area vary across the day?**
+NOTE: Stops are hard coded here. This is only for exploration purposes.
+NOTE 2: We're using 500m buffers to understand patterns further away from stops. The fishnet is still 200m.
+```{r stop-traffic-timeseries}
+ferry_stops <- tibble(
+  stop_name = c("Wall St / Pier 11", "East 34th St", "Hunters Point South"),
+  longitude = c(-74.00625, -73.97095, -73.96137),
+  latitude  = c(40.70322,  40.74409,  40.74185)
+) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+  st_transform(32618)
+
+stop_buffers <- ferry_stops %>%
+  mutate(geometry = st_buffer(geometry, dist = 500))
+
+stop_cells <- fishnet %>%
+  st_join(stop_buffers) %>%
+  filter(!is.na(stop_name)) %>%
+  st_drop_geometry() %>%
+  select(grid_id, stop_name)
+
+stop_traffic <- traffic %>%
+  st_drop_geometry() %>%
+  inner_join(stop_cells, by = "grid_id") %>%
+  group_by(stop_name, date, hour) %>%
+  summarise(vessel_count = sum(vessel_count), .groups = "drop") %>%
+  mutate(
+    date = as.Date(date),
+    datetime = ymd_h(paste(date, hour))
+  )
+
+ggplot(stop_traffic, aes(x = datetime, y = vessel_count, color = stop_name)) +
+  geom_line() +
+  geom_point(size = 1.5) +
+  labs(
+    title = "Vessel Traffic Near Ferry Stops",
+    subtitle = "500m buffer — June 16, 2025",
+    x = NULL,
+    y = "Unique Vessels per Hour",
+    color = "Stop"
+  ) +
+  scale_color_viridis_d(option = "turbo") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+## In-Water Traffic Along Route Corridors
+
+Beyond stop-level traffic, we want to look at traffic ferries encounter **as they transit between stops**. 
+This is particularly valuable for understanding in-water delays.
+
+The route geometry below is a straight-line placeholder between East 34th St and
+Hunters Point South. 
+NOTE: **This will be replaced with real SWIFTLY route geometry once that data is wrangled.**
+
+```{r route-traffic}
+# Placeholder: straight line East 34th St -> Hunters Point South
+# To be replaced with SWIFTLY route geometry
+route_placeholder <- st_sfc(
+  st_linestring(
+    matrix(c(-73.97095, 40.74409,
+             -73.96137, 40.74185),
+           ncol = 2, byrow = TRUE)
+  ),
+  crs = 4326
+) %>%
+  st_transform(32618) %>%
+  st_sf() %>%
+  mutate(route_id = "east_34th_to_hunters_point")
+
+# Buffer 250m along the route corridor
+route_buffer <- route_placeholder %>%
+  st_buffer(dist = 250)
+
+# Find fishnet cells intersecting the corridor
+route_cells <- fishnet %>%
+  st_join(route_buffer) %>%
+  filter(!is.na(route_id)) %>%
+  st_drop_geometry() %>%
+  select(grid_id, route_id)
+
+# Vessel count along corridor by hour
+route_traffic <- traffic %>%
+  st_drop_geometry() %>%
+  inner_join(route_cells, by = "grid_id") %>%
+  group_by(route_id, date, hour) %>%
+  summarise(vessel_count = sum(vessel_count), .groups = "drop") %>%
+  mutate(datetime = ymd_h(paste(date, hour)))
+
+ggplot(route_traffic, aes(x = datetime, y = vessel_count)) +
+  geom_line(color = "steelblue") +
+  geom_point(size = 1.5, color = "steelblue") +
+  labs(
+    title = "Vessel Traffic Along Route Segment",
+    subtitle = "Segment: East 34th St to Hunters Point South — 250m buffer, June 16, 2025",
+    x = NULL,
+    y = "Unique Vessels per Hour"
+  ) +
+  theme_minimal()
+```
+
+
+## SAMPLE Modeling Row (Refer to TODOs at end of doc)
+
+To make the feature concrete, the tables below show what joined observations will
+look like in the final modeling dataset. The first table shows the stop-level feature,
+the second shows the route corridor feature. In practice these will be joined to the
+stop-level delay data by stop, route, date, and hour.
+```{r sample-modeling-rows}
+stop_traffic %>%
+  filter(hour %in% c(8, 12, 17)) %>%
+  select(stop_name, date, hour, vessel_count) %>%
+  arrange(stop_name, hour) %>%
+  knitr::kable(caption = "Sample: AIS Traffic Feature at Stop Level")
+
+route_traffic %>%
+  filter(hour %in% c(8, 12, 17)) %>%
+  select(route_id, date, hour, vessel_count) %>%
+  arrange(hour) %>%
+  knitr::kable(caption = "Sample: AIS Traffic Feature Along Route Corridor")
+```
+
+
+```{r route-corridor-maps}
+# 500m context buffer
+crop_extent <- route_placeholder %>%
+  st_buffer(500) %>%
+  st_bbox()
+
+corridor_traffic <- traffic %>%
+  st_drop_geometry() %>%
+  inner_join(route_cells, by = "grid_id") %>%
+  filter(hour %in% c(8, 12, 17)) %>%
+  group_by(grid_id, hour) %>%
+  summarise(vessel_count = sum(vessel_count), .groups = "drop") %>%
+  left_join(fishnet, by = "grid_id") %>%
+  st_as_sf()
+
+ggplot() +
+  geom_sf(data = fishnet %>% st_crop(crop_extent), fill = "grey95", color = NA) +
+  geom_sf(data = corridor_traffic, aes(fill = vessel_count), color = NA) +
+  geom_sf(data = route_placeholder, color = "white", linewidth = 0.8) +
+  scale_fill_viridis_c(option = "inferno", na.value = "grey80") +
+  coord_sf(xlim = c(crop_extent["xmin"], crop_extent["xmax"]),
+           ylim = c(crop_extent["ymin"], crop_extent["ymax"])) +
+  facet_wrap(~hour, nrow = 1, labeller = as_labeller(c(
+    "8"  = "08:00 AM",
+    "12" = "12:00 PM",
+    "17" = "05:00 PM"
+  ))) +
+  labs(
+    title = "Vessel Traffic Along Route Corridor by Hour",
+    subtitle = "East 34th St to Hunters Point South — 250m buffer, June 16, 2025",
+    fill = "Vessel Count"
+  ) +
+  theme_minimal() +
+  theme(axis.text = element_blank(), panel.grid = element_blank())
+```
+
+## Major TODOs before Swiftly Integration:
+- The second to last section above assumes a straightline path between two terminals as a POC for the feature engineering. Of course, in reality, ferries will take different paths between terminals. Do we have a general route geometry like in GTFS? Do we need to derive a median/typical path from the Swiftly data? In general, I think we need a linestring geometry to understand the traffic impacts.
+- For the final traffic feature set, we need to exclude ferry AIS MMSIs. We only care about external traffic.
+  - TODO: Identify and exclude NYC Ferry MMSIs from AIS Data before aggregating traffic patterns.
+- pct_large_vessels could be good to add
+- Explore the lag features more. In this code, we're showing typical traffic at hours of a day. This is better than raw traffic counts.
+- SHIFT TO HEXBINS INSTEAD OF FISHNET
+
+## General Notes and Thoughts:
+- The above work focuses on traffic at stops and route segments (stop to stop).
+- This aggregation might be fine for our predictive model becauyse we don't care about the exact minute a vessel encounters a specific source of delay. We care more about the typical traffic at the time of day, day of week, and season,
+  
