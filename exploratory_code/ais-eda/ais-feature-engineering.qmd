@@ -13,3 +13,272 @@ options(scipen = 999)
 if(!require(pacman)){install.packages("pacman"); library(pacman, quietly = T)}
 p_load(tidyverse, sf, viridis, lubridate)
 ```
+
+## Data Loading
+
+Rather than loading all AIS data at once, we process one monthly CSV at a time and
+append results to a running panel. This keeps memory manageable given the scale of
+the data.
+```{r list-files}
+ais_files <- tibble(
+  path = c(
+    list.files("AIS/2024", pattern = "^AIS_2024\\.\\d{2}\\.csv$", full.names = TRUE),
+    list.files("AIS/2025", pattern = "^AIS_2025\\.\\d{2}\\.csv$", full.names = TRUE)
+  )
+)
+
+# Preview file list
+ais_files
+```
+
+## Load Shared Hexagonal Fishnet and Ferry Landings
+
+```{r load-spatial}
+fishnet <- st_read("../hex_grid_100m.geojson") %>%
+  st_transform(32118) %>%
+  mutate(grid_id = row_number())
+
+landings <- st_read("../swiftly_eda/Shapefiles/Landings/landings.shp") %>%
+  st_transform(32118)
+
+# Preview
+names(landings)
+glimpse(landings)
+```
+
+## Prepare Landing Buffers
+
+We deduplicate landings by `stop_id` since some stops serve multiple routes, then
+buffer 500m around each landing to capture nearby vessel traffic.
+```{r prepare-landings}
+landings_clean <- landings %>%
+  distinct(stop_id, .keep_all = TRUE)
+
+landing_buffers <- landings_clean %>%
+  st_buffer(dist = 500)
+
+# Find which hexbin cells fall within each landing buffer
+landing_cells <- fishnet %>%
+  st_join(landing_buffers) %>%
+  filter(!is.na(stop_id)) %>%
+  st_drop_geometry() %>%
+  select(grid_id, stop_id, stop_name)
+```
+
+
+## AIS Processing Pipeline: Two Approaches
+
+We test two approaches for aggregating AIS data to the hexbin level. The first uses
+`st_join` for spatial intersection.
+The second uses H3 arithmetic binning.
+
+### Method 1: Spatial Join
+
+The spatial join approach uses `st_join` to intersect AIS points with the hexgrid.
+This works with any hexgrid regardless of how it was built, but is slow on large data
+due to the geometric intersection tests required for every point.
+```{r method-spatial-join}
+test_file <- ais_files$path[1]
+
+process_spatial_join <- function(file_path) {
+  message("Processing with spatial join: ", file_path)
+  
+  read.csv(file_path) %>%
+    rename_with(tolower) %>%
+    rename(
+      base_date_time = any_of("basedatetime"),
+      latitude       = any_of("lat"),
+      longitude      = any_of("lon")
+    ) %>%
+    mutate(
+      base_date_time = ymd_hms(base_date_time, quiet = TRUE),
+      date = as.Date(base_date_time),
+      hour = hour(base_date_time)
+    ) %>%
+    filter(sog > 0.5) %>%
+    drop_na(longitude, latitude, date, hour) %>%
+    st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+    st_transform(32118) %>%
+    st_join(fishnet) %>%
+    st_drop_geometry() %>%
+    filter(!is.na(grid_id)) %>%
+    group_by(grid_id, date, hour) %>%
+    summarise(vessel_count = n_distinct(mmsi), .groups = "drop") %>%
+    inner_join(landing_cells, by = "grid_id") %>%
+    group_by(stop_id, stop_name, date, hour) %>%
+    summarise(vessel_count = sum(vessel_count), .groups = "drop")
+}
+
+time_spatial <- system.time({
+  result_spatial <- process_spatial_join(test_file)
+})
+
+message("Spatial join time: ", round(time_spatial["elapsed"], 1), " seconds")
+glimpse(result_spatial)
+```
+
+### Method 2: H3 Arithmetic Binning
+
+H3 is a hierarchical hexagonal grid system developed by Uber. Instead of geometric
+intersection, it assigns coordinates to hex cells using arithmetic — orders of magnitude
+faster than spatial joins. This approach requires the hexgrid to be built from H3 cells.
+We first check whether our partner's hexgrid aligns with H3 cells at the appropriate
+resolution, then use H3 binning if it does.
+```{r method-h3-binning}
+p_load(h3jsr)
+# TODO: Add code here if processing becomes an issue!
+```
+
+
+## Processing All AIS Data
+
+We process all 18 months of AIS data one file at a time, appending results to a
+single CSV on disk. This avoids loading all data into memory at once. If the output
+file already exists, we skip files that have already been processed — making the
+pipeline resumable if it is interrupted.
+```{r process-all-ais}
+output_path <- "AIS_landing_features.csv"
+
+# Get already processed months from output file if it exists
+already_processed <- if (file.exists(output_path)) {
+  read.csv(output_path) %>%
+    pull(date) %>%
+    as.Date() %>%
+    format("%Y-%m") %>%
+    unique()
+} else {
+  character(0)
+}
+
+# Process each file, skipping already completed months
+ais_files %>%
+  pull(path) %>%
+  walk(function(f) {
+    # Extract year-month from filename to check if already processed
+    file_month <- str_extract(f, "\\d{4}\\.\\d{2}") %>%
+      str_replace("\\.", "-")
+    
+    if (file_month %in% already_processed) {
+      message("Skipping already processed: ", f)
+      return(invisible(NULL))
+    }
+    
+    result <- process_spatial_join(f)
+    
+    if (!file.exists(output_path)) {
+      write.csv(result, output_path, row.names = FALSE)
+    } else {
+      write.table(result, output_path, sep = ",",
+                  row.names = FALSE, col.names = FALSE, append = TRUE)
+    }
+    
+    message("Completed: ", f)
+  })
+
+message("All files processed. Output saved to: ", output_path)
+```
+
+```{r sanity-check}
+landing_features <- read.csv("AIS_landing_features.csv") %>%
+  mutate(date = as.Date(date))
+
+glimpse(landing_features)
+nrow(landing_features)
+n_distinct(landing_features$stop_id)
+range(landing_features$date)
+```
+
+```{r missing-stops}
+landings_clean %>%
+  st_drop_geometry() %>%
+  select(stop_id, stop_name) %>%
+  anti_join(landing_features %>% mutate(stop_id = as.character(stop_id)), 
+            by = "stop_id")
+```
+
+```{r quick-data-check}
+# Check for any NAs
+landing_features %>%
+  summarise(across(everything(), ~sum(is.na(.))))
+
+# Check distribution of vessel counts including zeros
+summary(landing_features$vessel_count)
+
+# Check if any zeros exist
+landing_features %>%
+  filter(vessel_count == 0) %>%
+  nrow()
+```
+
+## Zero-Filling Missing Hours
+
+Since the pipeline only produces rows where vessels were observed, missing hours
+are absent rather than zero. We complete the panel by filling in all combinations
+of stop, date, and hour with zeros where no vessels were recorded.
+```{r zero-fill}
+# Build complete panel of all stop/date/hour combinations
+complete_panel <- landing_features %>%
+  distinct(stop_id, stop_name) %>%
+  cross_join(
+    landing_features %>%
+      distinct(date) %>%
+      cross_join(tibble(hour = 0:23))
+  )
+
+landing_features_complete <- complete_panel %>%
+  left_join(landing_features, by = c("stop_id", "stop_name", "date", "hour")) %>%
+  mutate(vessel_count = replace_na(vessel_count, 0))
+
+nrow(landing_features_complete)
+summary(landing_features_complete$vessel_count)
+
+write.csv(landing_features_complete, "AIS_landing_features.csv", row.names = FALSE)
+```
+
+## Historical Averages
+
+For the predictive model, we derive historical averages by stop, day of
+week, and hour — representing the typical traffic environment a ferry would encounter
+at a given stop at a given time.
+
+```{r historical-averages}
+historical_averages <- landing_features_complete %>%
+  mutate(day_of_week = wday(date, label = TRUE)) %>%
+  group_by(stop_id, stop_name, day_of_week, hour) %>%
+  summarise(
+    avg_vessel_count = mean(vessel_count),
+    median_vessel_count = median(vessel_count),
+    sd_vessel_count = sd(vessel_count),
+    .groups = "drop"
+  )
+
+glimpse(historical_averages)
+nrow(historical_averages)
+
+write.csv(historical_averages, "AIS_historical_averages.csv", row.names = FALSE)
+```
+
+## Visualizing Historical Averages
+Picked 3 different landings for a quick visualization.
+```{r viz-historical-averages}
+stops_to_plot <- c("Hunters Point South", "Wall St/Pier 11", "East 34th Street")
+
+plot_stop_traffic <- function(stop) {
+  historical_averages %>%
+    filter(stop_name == stop) %>%
+    ggplot(aes(x = hour, y = avg_vessel_count, color = day_of_week)) +
+    geom_line() +
+    labs(
+      title = paste("Average Vessel Traffic —", stop),
+      subtitle = "Based on 18 months of AIS data (Jan 2024 - Jun 2025)",
+      x = "Hour of Day",
+      y = "Average Unique Vessels",
+      color = "Day of Week"
+    ) +
+    scale_color_viridis_d(option = "turbo") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+walk(stops_to_plot, ~print(plot_stop_traffic(.x)))
+```
