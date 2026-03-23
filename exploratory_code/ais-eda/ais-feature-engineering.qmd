@@ -282,3 +282,115 @@ plot_stop_traffic <- function(stop) {
 
 walk(stops_to_plot, ~print(plot_stop_traffic(.x)))
 ```
+
+## Team Check-in 3/22
+- TODO: Aggregate based on schedule type as well. And create a holiday value for each stop (with hours of the day as well).
+Created the following file to store just dates and seasonal schedule/holiday values.
+```{r load-date-lookup}
+date_lookup <- read.csv("date_lookup.csv") %>%
+  mutate(date = as.Date(date))
+```
+
+```{r historical-averages}
+historical_averages <- landing_features_complete %>%
+  left_join(date_lookup, by = "date") %>%
+  mutate(day_of_week = wday(date, label = TRUE)) %>%
+  group_by(stop_id, stop_name, schedule_season, schedule_daytype, day_of_week, hour) %>%
+  summarise(
+    avg_vessel_count    = mean(vessel_count),
+    median_vessel_count = median(vessel_count),
+    sd_vessel_count     = sd(vessel_count),
+    .groups = "drop"
+  )
+
+glimpse(historical_averages)
+nrow(historical_averages)
+write.csv(historical_averages, "AIS_historical_averages.csv", row.names = FALSE)
+```
+
+```{r viz-historical-averages}
+stops_to_plot <- c("Hunters Point South", "Wall St/Pier 11", "East 34th Street")
+
+plot_stop_traffic <- function(stop) {
+  historical_averages %>%
+    filter(stop_name == stop) %>%
+    ggplot(aes(x = hour, y = avg_vessel_count, color = day_of_week)) +
+    geom_line() +
+    facet_wrap(~schedule_season, nrow = 1) +
+    labs(
+      title = paste("Average Vessel Traffic —", stop),
+      subtitle = "Based on 18 months of AIS data (Jan 2024 - Jun 2025)",
+      x = "Hour of Day",
+      y = "Average Unique Vessels",
+      color = "Day of Week"
+    ) +
+    scale_color_viridis_d(option = "turbo") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+walk(stops_to_plot, ~print(plot_stop_traffic(.x)))
+```
+
+## Quick EDA of Baseline Feature set
+
+```{r setup-2}
+#| eval: false
+baseline <- read.csv("../ridership_eda/baseline_model_stop_trip.csv")
+```
+
+### Distribution of Arrival Lateness
+```{r eda-outcome}
+# Overall distribution
+summary(baseline_clean$arr_late_min)
+
+# Distribution plot — trimmed to remove extreme outliers for readability
+baseline_clean %>%
+  filter(arr_late_min >= -10, arr_late_min <= 30) %>%
+  ggplot(aes(x = arr_late_min)) +
+  geom_histogram(binwidth = 1, fill = "steelblue", color = "white") +
+  geom_vline(xintercept = 0, color = "red", linetype = "dashed") +
+  geom_vline(xintercept = 5, color = "orange", linetype = "dashed") +
+  geom_vline(xintercept = 10, color = "darkred", linetype = "dashed") +
+  labs(
+    title = "Distribution of Arrival Lateness",
+    subtitle = "Red = on time threshold, Orange = concerning (5 min), Dark red = severe (10 min)",
+    x = "Minutes Late (negative = early)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+### Lateness by Route
+```{r eda-by-route}
+baseline_clean %>%
+  group_by(route) %>%
+  summarise(
+    mean_late   = mean(arr_late_min, na.rm = TRUE),
+    median_late = median(arr_late_min, na.rm = TRUE),
+    pct_late_5  = mean(arr_late_min > 5, na.rm = TRUE),
+    pct_late_10 = mean(arr_late_min > 10, na.rm = TRUE),
+    n           = n()
+  ) %>%
+  arrange(desc(mean_late)) %>%
+  knitr::kable(caption = "Arrival Lateness by Route", digits = 2)
+```
+
+### Lateness by Hour and Season
+```{r eda-by-hour-season}
+baseline_clean %>%
+  group_by(schedule_season, dep_hour) %>%
+  summarise(mean_late = mean(arr_late_min, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = dep_hour, y = mean_late, color = schedule_season)) +
+  geom_line() +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(
+    title = "Mean Arrival Lateness by Hour and Season",
+    x = "Departure Hour",
+    y = "Mean Minutes Late",
+    color = "Season"
+  ) +
+  scale_color_viridis_d(option = "turbo") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
