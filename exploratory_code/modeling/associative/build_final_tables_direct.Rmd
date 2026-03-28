@@ -1,0 +1,804 @@
+---
+title: "NYC Ferry Direct Pipeline to Final Tables"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(stringr)
+  library(lubridate)
+  library(purrr)
+  library(arrow)
+  library(knitr)
+})
+options(scipen = 999)
+
+TZ_NY <- "America/New_York"
+TZ_UTC <- "UTC"
+trip_data_dir <- "C:/Data/Spring 2026/CPLN 7900/trip_data"
+out_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/outputs/direct_pipeline_final_20260327"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+path_trip_2024 <- file.path(trip_data_dir, "NYCF_trip_data_2024.csv")
+path_trip_2025 <- file.path(trip_data_dir, "NYCF_trip_data_2025.01_06.csv")
+path_stop_2024 <- file.path(trip_data_dir, "NYCF_stop_data_2024.csv")
+path_stop_2025 <- file.path(trip_data_dir, "NYCF_stop_data_2025.01_06.csv")
+path_env <- file.path(trip_data_dir, "environment_utc_hourly_2024_2025.csv")
+path_ais <- file.path(trip_data_dir, "AIS_landing_features.csv")
+
+out_baseline <- file.path(out_dir, "baseline_modeling_table_final_direct.csv")
+out_decomp <- file.path(out_dir, "stop_level_arrival_decomposition_table_final_direct.csv")
+out_lookup <- file.path(out_dir, "lookup.csv")
+
+out_baseline_parquet <- file.path(out_dir, "baseline_modeling_table_final_direct.parquet")
+out_decomp_parquet <- file.path(out_dir, "stop_level_arrival_decomposition_table_final_direct.parquet")
+out_lookup_parquet <- file.path(out_dir, "lookup.parquet")
+```
+
+## Purpose
+
+This notebook rebuilds the pipeline directly from `trip_data` to:
+
+1. Final baseline modeling table  
+2. Final lean stop-level arrival decomposition table  
+3. One merged lookup table (optional but kept for auditability)  
+
+No extra intermediate output tables are written.
+
+## Source Files
+
+```{r}
+source_files <- tibble(
+  file = c(path_trip_2024, path_trip_2025, path_stop_2024, path_stop_2025, path_env, path_ais),
+  exists = file.exists(c(path_trip_2024, path_trip_2025, path_stop_2024, path_stop_2025, path_env, path_ais))
+)
+print(source_files)
+stopifnot(all(source_files$exists))
+```
+
+## Helper Functions
+
+```{r}
+clean_names_simple <- function(nm) {
+  nm %>%
+    str_replace_all("\ufeff", "") %>% str_trim() %>% str_to_lower() %>%
+    str_replace_all("[^a-z0-9]+", "_") %>% str_replace_all("_+", "_") %>% str_replace_all("^_|_$", "")
+}
+
+parse_trip_date <- function(x) as.Date(parse_date_time(as.character(x), orders = c("mdY", "Ymd"), quiet = TRUE))
+normalize_trip_no <- function(x) suppressWarnings(as.numeric(as.character(x)))
+
+parse_datetime_with_default_tz <- function(x, default_tz) {
+  x_chr <- if (inherits(x, "POSIXt")) {
+    # Preserve source clock time and then assign the intended source timezone explicitly.
+    format(x, format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
+  } else {
+    as.character(x)
+  }
+  x_chr <- str_trim(x_chr)
+  x_chr[x_chr %in% c("", "NA", "NaN", "NAT")] <- NA_character_
+  has_tz <- str_detect(x_chr, "(Z$|[+-][0-9]{2}:?[0-9]{2}$|\\sUTC$|\\sEST$|\\sEDT$)")
+  has_tz[is.na(has_tz)] <- FALSE
+  out <- as.POSIXct(rep(NA, length(x_chr)), origin = "1970-01-01", tz = default_tz)
+  if (any(!has_tz, na.rm = TRUE)) {
+    out[!has_tz] <- suppressWarnings(parse_date_time(
+      x_chr[!has_tz], orders = c("mdY HMS", "mdY HM", "mdY IMSp", "mdY IMp", "Ymd HMS", "Ymd HM"), tz = default_tz, quiet = TRUE
+    ))
+  }
+  if (any(has_tz, na.rm = TRUE)) {
+    dt_utc <- suppressWarnings(parse_date_time(
+      x_chr[has_tz], orders = c("mdY HMS z", "mdY HM z", "Ymd HMS z", "Ymd HM z", "Ymd HMS", "mdY HMS"), tz = "UTC", quiet = TRUE
+    ))
+    out[has_tz] <- with_tz(dt_utc, tzone = default_tz)
+  }
+  out
+}
+
+parse_ny_datetime <- function(x) parse_datetime_with_default_tz(x, TZ_NY)
+parse_utc_datetime <- function(x) parse_datetime_with_default_tz(x, TZ_UTC)
+
+add_trip_keys <- function(df, date_col = "trip_date", trip_no_col = "trip_no", route_col = "route_id", direction_col = "direction") {
+  date_vec <- df[[date_col]]
+  trip_no_vec <- df[[trip_no_col]]
+  route_vec <- df[[route_col]]
+  direction_vec <- df[[direction_col]]
+  trip_no_valid <- !is.na(trip_no_vec) & trip_no_vec >= 0
+  trip_key <- ifelse(
+    trip_no_valid & !is.na(date_vec),
+    paste0(format(date_vec, "%Y%m%d"), as.character(as.integer(trip_no_vec))),
+    NA_character_
+  )
+  full_trip_key <- ifelse(
+    trip_no_valid & !is.na(date_vec),
+    paste(format(date_vec, "%Y-%m-%d"), as.character(as.integer(trip_no_vec)), route_vec, direction_vec, sep = "|"),
+    NA_character_
+  )
+  mutate(df, trip_no_valid = trip_no_valid, trip_key = trip_key, full_trip_key = full_trip_key)
+}
+
+apply_lookup_group_rules <- function(df) {
+  df %>%
+    mutate(
+      lk_schedule_season = if_else(route_id == "GI" & lk_schedule_season == "SPRING", "SUMMER_1", lk_schedule_season),
+      lk_schedule_season = if_else(route_id == "GI" & lk_schedule_season == "FALL", "SUMMER_2", lk_schedule_season),
+      lk_dep_hour_group = if_else(lk_schedule_daytype == "WEEKEND" & lk_dep_hour_group == "5_8", "9_11", lk_dep_hour_group),
+      lk_schedule_season = if_else(route_id == "ER" & lk_stop_id == 90L, "ALL", lk_schedule_season),
+      lk_dep_hour_group = if_else(route_id == "ER" & lk_stop_id == 90L, "ALL", lk_dep_hour_group),
+      lk_stop_id = if_else(route_id == "ER" & lk_stop_id == 90L, -1L, lk_stop_id),
+      lk_schedule_season = if_else(route_id == "RR", "ALL", lk_schedule_season),
+      lk_schedule_daytype = if_else(route_id == "RR", "ALL", lk_schedule_daytype),
+      lk_dep_hour_group = if_else(route_id == "RR", "ALL", lk_dep_hour_group),
+      lk_stop_id = if_else(route_id == "RR", -1L, lk_stop_id)
+    )
+}
+
+build_hourly_ais_utc <- function(path_ais) {
+  read_csv(path_ais, show_col_types = FALSE) %>%
+    transmute(
+      stop_id = suppressWarnings(as.integer(stop_id)),
+      ais_date = as.Date(date),
+      ais_hour = suppressWarnings(as.integer(hour)),
+      vessel_count = suppressWarnings(as.numeric(vessel_count))
+    ) %>%
+    mutate(
+      ais_hour_start_utc = if_else(
+        !is.na(ais_date) & !is.na(ais_hour),
+        as.POSIXct(ais_date, tz = TZ_UTC) + hours(ais_hour),
+        as.POSIXct(NA, origin = "1970-01-01", tz = TZ_UTC)
+      ),
+      ais_hour_start_utc = floor_date(ais_hour_start_utc, unit = "hour")
+    ) %>%
+    group_by(stop_id, ais_hour_start_utc) %>%
+    summarise(vessel_count = sum(vessel_count, na.rm = TRUE), .groups = "drop")
+}
+
+build_hourly_env_utc <- function(path_env) {
+  env_raw <- read_csv(path_env, show_col_types = FALSE)
+  names(env_raw) <- clean_names_simple(names(env_raw))
+
+  hour_from_hour_col_utc <- if ("hour_utc" %in% names(env_raw)) parse_utc_datetime(env_raw$hour_utc) else rep(as.POSIXct(NA, origin = "1970-01-01", tz = TZ_UTC), nrow(env_raw))
+  hour_from_obs_col_utc <- if ("obs_hour_utc" %in% names(env_raw)) parse_utc_datetime(env_raw$obs_hour_utc) else rep(as.POSIXct(NA, origin = "1970-01-01", tz = TZ_UTC), nrow(env_raw))
+  hour_raw <- coalesce(hour_from_hour_col_utc, hour_from_obs_col_utc)
+
+  # Midnight repair: when daily 00:00 UTC is missing in source hour fields, recover it from row order
+  # using neighboring timestamps (prev + 1 hour when prev=23:00 and next=01:00 pattern).
+  prev_hour <- lag(hour_raw)
+  next_hour <- lead(hour_raw)
+  recover_midnight <- is.na(hour_raw) & !is.na(prev_hour) & !is.na(next_hour) &
+    hour(prev_hour) == 23 & hour(next_hour) == 1 &
+    as.numeric(difftime(next_hour, prev_hour, units = "hours")) == 2
+  hour_fixed <- if_else(recover_midnight, prev_hour + hours(1), hour_raw)
+
+  env_utc <- env_raw %>%
+    mutate(
+      env_hour_start_utc = floor_date(hour_fixed, unit = "hour"),
+      env_temperature_c = suppressWarnings(as.numeric(temperature_c)),
+      env_wind_speed_mps = suppressWarnings(as.numeric(wind_speed_mps)),
+      env_visibility_m = suppressWarnings(as.numeric(visibility_m)),
+      env_precipitation_mm = suppressWarnings(as.numeric(precipitation_mm)),
+      env_battery_water_level_anomaly = suppressWarnings(as.numeric(battery_water_level_anomaly)),
+      env_narrows_current_residual = suppressWarnings(as.numeric(narrows_current_residual)),
+      env_battery_water_level_obs = suppressWarnings(as.numeric(battery_water_level_obs)),
+      env_narrows_current_obs = suppressWarnings(as.numeric(narrows_current_obs))
+    ) %>%
+    select(env_hour_start_utc, starts_with("env_"))
+
+  env_sentinel_cols <- setdiff(names(env_utc)[grepl("^env_", names(env_utc))], "env_hour_start_utc")
+  weather_clean <- replace_weather_sentinels(env_utc, env_sentinel_cols)
+  env_value_cols <- setdiff(names(weather_clean$data)[grepl("^env_", names(weather_clean$data))], "env_hour_start_utc")
+  weather_clean$data %>%
+    group_by(env_hour_start_utc) %>%
+    summarise(across(all_of(env_value_cols), ~ mean(.x, na.rm = TRUE)), .groups = "drop")
+}
+
+hour_group_5bin <- function(h) {
+  h_num <- suppressWarnings(as.numeric(h))
+  out <- rep(NA_character_, length(h_num))
+  out[h_num >= 5 & h_num <= 8] <- "5_8"
+  out[h_num >= 9 & h_num <= 11] <- "9_11"
+  out[h_num >= 12 & h_num <= 14] <- "12_14"
+  out[h_num >= 15 & h_num <= 17] <- "15_17"
+  out[h_num >= 18 & h_num <= 22] <- "18_22"
+  out
+}
+
+segment_id_3digit <- function(from_stop_id, to_stop_id) {
+  a <- suppressWarnings(as.integer(from_stop_id))
+  b <- suppressWarnings(as.integer(to_stop_id))
+  ifelse(is.na(a) | is.na(b), NA_character_, paste0(sprintf("%03d", a), "_", sprintf("%03d", b)))
+}
+
+safe_mode <- function(x) {
+  x <- x[!is.na(x)]
+  if (length(x) == 0) return(NA)
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+parse_variance_seconds <- function(x) {
+  parse_one <- function(s) {
+    s <- str_trim(as.character(s))
+    if (is.na(s) || s %in% c("", "NA", "NaN", "NAT", "No_Data", "NO_DATA", "No Data", "NULL", "null")) return(NA_real_)
+    sign <- 1
+    if (str_starts(s, "-")) {
+      sign <- -1
+      s <- str_sub(s, 2)
+    } else if (str_starts(s, "\\+")) {
+      s <- str_sub(s, 2)
+    }
+    if (str_detect(s, "^\\d+(\\.\\d+)?$")) return(sign * as.numeric(s))
+    if (str_detect(s, "^\\d{1,3}:\\d{1,2}(:\\d{1,2})?$")) {
+      parts <- str_split(s, ":", simplify = TRUE)
+      if (ncol(parts) == 2) {
+        mm <- suppressWarnings(as.numeric(parts[1]))
+        ss <- suppressWarnings(as.numeric(parts[2]))
+        if (!is.na(mm) && !is.na(ss)) return(sign * (mm * 60 + ss))
+      }
+      if (ncol(parts) == 3) {
+        hh <- suppressWarnings(as.numeric(parts[1]))
+        mm <- suppressWarnings(as.numeric(parts[2]))
+        ss <- suppressWarnings(as.numeric(parts[3]))
+        if (!is.na(hh) && !is.na(mm) && !is.na(ss)) return(sign * (hh * 3600 + mm * 60 + ss))
+      }
+    }
+    NA_real_
+  }
+  vapply(x, parse_one, numeric(1))
+}
+
+reconstruct_with_variance_sign <- function(reference_time, actual_truncated, variance_seconds) {
+  n <- length(reference_time)
+  out_time <- as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = TZ_NY)
+  sign_rule <- rep(NA_character_, n)
+
+  mag <- abs(variance_seconds)
+  plus <- reference_time + as.difftime(mag, units = "secs")
+  minus <- reference_time - as.difftime(mag, units = "secs")
+
+  trunc_floor <- floor_date(actual_truncated, unit = "minute")
+  plus_match <- !is.na(plus) & !is.na(trunc_floor) & floor_date(plus, unit = "minute") == trunc_floor
+  minus_match <- !is.na(minus) & !is.na(trunc_floor) & floor_date(minus, unit = "minute") == trunc_floor
+
+  plus_only <- plus_match & !minus_match
+  minus_only <- minus_match & !plus_match
+  out_time[plus_only] <- plus[plus_only]
+  out_time[minus_only] <- minus[minus_only]
+  sign_rule[plus_only] <- "plus_match_trunc"
+  sign_rule[minus_only] <- "minus_match_trunc"
+
+  unresolved <- !is.na(reference_time) & !is.na(mag) & is.na(out_time)
+  if (any(unresolved)) {
+    plus_diff <- abs(as.numeric(difftime(plus[unresolved], actual_truncated[unresolved], units = "secs")))
+    minus_diff <- abs(as.numeric(difftime(minus[unresolved], actual_truncated[unresolved], units = "secs")))
+    choose_plus <- plus_diff <= minus_diff
+    idx <- which(unresolved)
+    out_time[idx[choose_plus]] <- plus[idx[choose_plus]]
+    out_time[idx[!choose_plus]] <- minus[idx[!choose_plus]]
+    sign_rule[idx[choose_plus]] <- "plus_nearest_trunc"
+    sign_rule[idx[!choose_plus]] <- "minus_nearest_trunc"
+  }
+
+  # If truncated raw time is unavailable, fall back to signed variance convention in source.
+  no_trunc_fallback <- !is.na(reference_time) & !is.na(variance_seconds) & is.na(actual_truncated) & is.na(out_time)
+  if (any(no_trunc_fallback)) {
+    out_time[no_trunc_fallback] <- reference_time[no_trunc_fallback] + as.difftime(variance_seconds[no_trunc_fallback], units = "secs")
+    sign_rule[no_trunc_fallback] <- ifelse(variance_seconds[no_trunc_fallback] >= 0, "plus_from_signed_variance_no_trunc", "minus_from_signed_variance_no_trunc")
+  }
+
+  list(
+    time = out_time,
+    sign_rule = sign_rule,
+    sign_from_trunc = sign_rule %in% c("plus_match_trunc", "minus_match_trunc", "plus_nearest_trunc", "minus_nearest_trunc")
+  )
+}
+
+replace_weather_sentinels <- function(df, weather_cols) {
+  sentinel <- c(999, 999.0, 999.9, 9999, 99999, 999999, -999, -999.0, -999.9, -9999, -99999, -999999)
+  out <- df
+  log_tbl <- list()
+  for (col in intersect(weather_cols, names(out))) {
+    v <- suppressWarnings(as.numeric(out[[col]]))
+    hit <- !is.na(v) & v %in% sentinel
+    n_hit <- sum(hit, na.rm = TRUE)
+    if (n_hit > 0) v[hit] <- NA_real_
+    out[[col]] <- v
+    log_tbl[[length(log_tbl) + 1]] <- tibble(column_name = col, sentinel_replacements = n_hit)
+  }
+  list(data = out, log = bind_rows(log_tbl))
+}
+```
+
+## Ingest and Harmonize Trip/Stop Inputs
+
+```{r}
+trip_raw <- bind_rows(
+  read_csv(path_trip_2024, show_col_types = FALSE),
+  read_csv(path_trip_2025, show_col_types = FALSE)
+)
+names(trip_raw) <- clean_names_simple(names(trip_raw))
+
+schedule_regime_vec <- if ("trip_schedule_regime" %in% names(trip_raw)) {
+  trip_raw$trip_schedule_regime
+} else if ("trip_schedule" %in% names(trip_raw)) {
+  trip_raw$trip_schedule
+} else if ("schedule" %in% names(trip_raw)) {
+  trip_raw$schedule
+} else {
+  rep(NA_character_, nrow(trip_raw))
+}
+
+stop_raw <- bind_rows(
+  read_csv(path_stop_2024, show_col_types = FALSE),
+  read_csv(path_stop_2025, show_col_types = FALSE)
+)
+names(stop_raw) <- clean_names_simple(names(stop_raw))
+
+stop_tbl <- stop_raw %>%
+  transmute(
+    trip_date = parse_trip_date(trip_date),
+    trip_no = normalize_trip_no(trip_no),
+    route_id = toupper(str_trim(as.character(route_no))),
+    direction = toupper(str_trim(as.character(route_direction))),
+    stop_id = suppressWarnings(as.integer(stop_id)),
+    stop_name = as.character(stop_name),
+    stop_sequence = suppressWarnings(as.numeric(stop_sequence)),
+    scheduled_arrival_time = parse_ny_datetime(scheduled_arrival_dt),
+    scheduled_departure_time = parse_ny_datetime(scheduled_departure_dt),
+    actual_arrival_time_trunc = parse_ny_datetime(actual_arrival_dt),
+    actual_departure_time_trunc = parse_ny_datetime(actual_departure_dt),
+    arrival_variance_raw = as.character(arrivaltimevariance),
+    departure_variance_raw = as.character(departuretimevariance),
+    boarding_wake = suppressWarnings(as.numeric(boarding_wake)),
+    alightings_wake = suppressWarnings(as.numeric(alightings_wake)),
+    vehicle_id = as.character(vehicle_id)
+  ) %>%
+  mutate(
+    scheduled_time_original = coalesce(scheduled_departure_time, scheduled_arrival_time)
+  ) %>%
+  arrange(trip_date, trip_no, route_id, direction, stop_sequence) %>%
+  group_by(trip_date, trip_no, route_id, direction) %>%
+  mutate(
+    onboard_raw_unclipped = cumsum(coalesce(boarding_wake, 0)) - cumsum(coalesce(alightings_wake, 0)),
+    onboard_raw = pmax(onboard_raw_unclipped, 0)
+  ) %>%
+  ungroup()
+
+trip_tbl <- trip_raw %>%
+  transmute(
+    trip_date = parse_trip_date(trip_date),
+    trip_no = normalize_trip_no(trip_no),
+    route_id = toupper(str_trim(as.character(route_no))),
+    direction = toupper(str_trim(as.character(route_direction))),
+    vessel_operation_class = as.character(vessel_operation_class),
+    trip_schedule_regime = as.character(schedule_regime_vec),
+    vessel_id_trip = as.character(vehicle_id)
+  )
+```
+
+## Trip Key, Invalid Trip Filtering, and Schedule Mapping
+
+```{r}
+stop_tbl <- stop_tbl %>%
+  add_trip_keys()
+
+trip_tbl <- trip_tbl %>%
+  add_trip_keys()
+
+stop_tbl <- stop_tbl %>% filter(trip_no_valid, !is.na(trip_key), !is.na(full_trip_key))
+trip_tbl <- trip_tbl %>% filter(trip_no_valid, !is.na(trip_key), !is.na(full_trip_key))
+
+trip_meta <- trip_tbl %>%
+  group_by(full_trip_key, trip_key) %>%
+  summarise(
+    vessel_operation_class = safe_mode(vessel_operation_class),
+    trip_schedule_regime = safe_mode(trip_schedule_regime),
+    vessel_id_trip = safe_mode(vessel_id_trip),
+    vessel_capacity_from_class = suppressWarnings(as.numeric(str_extract(safe_mode(vessel_operation_class), "\\d+"))),
+    .groups = "drop"
+  )
+
+stop_tbl <- stop_tbl %>%
+  left_join(trip_meta %>% select(full_trip_key, vessel_operation_class, vessel_capacity_from_class, trip_schedule_regime, vessel_id_trip), by = "full_trip_key") %>%
+  mutate(
+    vessel_id = coalesce(vehicle_id, vessel_id_trip),
+    vessel_capacity = vessel_capacity_from_class,
+    regime_l = str_to_lower(coalesce(trip_schedule_regime, "")),
+    dow = wday(trip_date, week_start = 1),
+    is_weekend_date = dow %in% c(6, 7),
+    # Holiday is folded into WEEKEND (no separate HOLIDAY category).
+    schedule_daytype = case_when(
+      str_detect(regime_l, "weekend") ~ "WEEKEND",
+      str_detect(regime_l, "modified|holiday|passover|sukkot|memorial") ~ "WEEKEND",
+      is_weekend_date ~ "WEEKEND",
+      TRUE ~ "WEEKDAY"
+    ),
+    season_tmp = case_when(
+      str_detect(regime_l, "winter") ~ "WINTER",
+      str_detect(regime_l, "spring|passover") ~ "SPRING",
+      str_detect(regime_l, "fall|sukkot") ~ "FALL",
+      str_detect(regime_l, "summer|early summer|late summer|memorial") ~ "SUMMER",
+      TRUE ~ NA_character_
+    ),
+    mm = month(trip_date),
+    summer_like = season_tmp == "SUMMER" | str_detect(regime_l, "summer|early summer|late summer|memorial"),
+    schedule_season = case_when(
+      !summer_like ~ season_tmp,
+      summer_like & mm <= 6 ~ "SUMMER_1",
+      summer_like & mm >= 7 ~ "SUMMER_2",
+      TRUE ~ season_tmp
+    )
+  ) %>%
+  select(-vessel_id_trip)
+
+stop_tbl <- stop_tbl %>%
+  filter(!(trip_date == as.Date("2024-04-25") & route_id == "SB"))
+```
+
+## Time Refinement (2024 Variance Reconstruction) and Origin Hour
+
+```{r}
+# Reconstruct second-level actual times using variance fields + truncated displayed raw times.
+# Sign is not hard-coded: we test +/- variance and choose the option that matches minute truncation of
+# the displayed raw timestamp. This preserves the intended full-precision timestamp reconstruction.
+arrival_var_sec <- parse_variance_seconds(stop_tbl$arrival_variance_raw)
+departure_var_sec <- parse_variance_seconds(stop_tbl$departure_variance_raw)
+
+arr_recon <- reconstruct_with_variance_sign(
+  reference_time = stop_tbl$scheduled_arrival_time,
+  actual_truncated = stop_tbl$actual_arrival_time_trunc,
+  variance_seconds = arrival_var_sec
+)
+dep_recon <- reconstruct_with_variance_sign(
+  reference_time = stop_tbl$scheduled_departure_time,
+  actual_truncated = stop_tbl$actual_departure_time_trunc,
+  variance_seconds = departure_var_sec
+)
+
+stop_tbl <- stop_tbl %>%
+  mutate(
+    actual_arrival_time_from_variance = arr_recon$time,
+    actual_departure_time_from_variance = dep_recon$time,
+    actual_arrival_time = coalesce(actual_arrival_time_from_variance, actual_arrival_time_trunc),
+    actual_departure_time = coalesce(actual_departure_time_from_variance, actual_departure_time_trunc)
+  )
+
+stop_tbl <- stop_tbl %>%
+  arrange(trip_key, stop_sequence) %>%
+  group_by(trip_key) %>%
+  mutate(
+    origin_stop_sequence = min(stop_sequence, na.rm = TRUE),
+    terminal_stop_sequence = max(stop_sequence, na.rm = TRUE),
+    stop_rank = row_number() - 1L
+  ) %>%
+  ungroup()
+
+origin_hour_map <- stop_tbl %>%
+  group_by(trip_key) %>%
+  arrange(stop_sequence, .by_group = TRUE) %>%
+  summarise(dep_hour_origin = hour(first(scheduled_time_original)), .groups = "drop")
+
+stop_tbl <- stop_tbl %>%
+  left_join(origin_hour_map, by = "trip_key") %>%
+  mutate(dep_hour_origin = as.numeric(dep_hour_origin))
+```
+
+## One Merged Lookup (Median Offsets on Merged Groups)
+
+```{r}
+stop_tbl <- stop_tbl %>%
+  mutate(
+    arr_offset_min = as.numeric(difftime(actual_arrival_time, scheduled_time_original, units = "mins")),
+    dep_offset_min = as.numeric(difftime(actual_departure_time, scheduled_time_original, units = "mins"))
+  )
+
+lookup_base <- stop_tbl %>%
+  mutate(
+    lk_schedule_season = coalesce(schedule_season, "UNK"),
+    lk_schedule_daytype = coalesce(schedule_daytype, "UNK"),
+    lk_dep_hour_group = case_when(
+      dep_hour_origin >= 5 & dep_hour_origin <= 8 ~ "5_8",
+      dep_hour_origin >= 9 & dep_hour_origin <= 11 ~ "9_11",
+      dep_hour_origin >= 12 & dep_hour_origin <= 14 ~ "12_14",
+      dep_hour_origin >= 15 & dep_hour_origin <= 17 ~ "15_17",
+      dep_hour_origin >= 18 & dep_hour_origin <= 22 ~ "18_22",
+      !is.na(dep_hour_origin) ~ as.character(as.integer(dep_hour_origin)),
+      TRUE ~ "UNK"
+    ),
+    lk_stop_id = as.integer(stop_id)
+  ) %>%
+  apply_lookup_group_rules()
+
+lookup_output <- lookup_base %>%
+  group_by(route_id, direction, lk_schedule_season, lk_schedule_daytype, lk_dep_hour_group, lk_stop_id) %>%
+  summarise(
+    n_obs = n(),
+    median_arr_offset_min = ifelse(sum(!is.na(arr_offset_min)) > 0, median(arr_offset_min, na.rm = TRUE), NA_real_),
+    median_dep_offset_min = ifelse(sum(!is.na(dep_offset_min)) > 0, median(dep_offset_min, na.rm = TRUE), NA_real_),
+    .groups = "drop"
+  ) %>%
+  arrange(route_id, direction, lk_schedule_daytype, lk_schedule_season, lk_dep_hour_group, lk_stop_id)
+
+expected_tbl <- lookup_base %>%
+  left_join(
+    lookup_output,
+    by = c("route_id", "direction", "lk_schedule_season", "lk_schedule_daytype", "lk_dep_hour_group", "lk_stop_id")
+  ) %>%
+  mutate(
+    lookup_level_used = "merged_rule_v1",
+    lookup_n_obs = n_obs
+  )
+
+expected_tbl <- expected_tbl %>%
+  mutate(
+    expected_arrival_time = scheduled_time_original + as.difftime(median_arr_offset_min, units = "mins"),
+    expected_departure_time = scheduled_time_original + as.difftime(median_dep_offset_min, units = "mins"),
+    lateness_vs_original_schedule_min = as.numeric(difftime(actual_arrival_time, scheduled_time_original, units = "mins")),
+    arrival_delay_min = as.numeric(difftime(actual_arrival_time, expected_arrival_time, units = "mins")),
+    departure_delay_min = as.numeric(difftime(actual_departure_time, expected_departure_time, units = "mins"))
+  )
+
+lookup_output <- lookup_output %>%
+  mutate(lookup_level_used = "merged_rule_v1", lookup_n_obs = n_obs) %>%
+  select(lookup_level_used, route_id, direction, lk_schedule_season, lk_schedule_daytype, lk_dep_hour_group, lk_stop_id,
+         lookup_n_obs, median_arr_offset_min, median_dep_offset_min)
+```
+
+## Trip Sequence and Delay Decomposition
+
+```{r}
+trip_summary <- expected_tbl %>%
+  group_by(trip_key) %>%
+  summarise(
+    service_date = safe_mode(trip_date),
+    route_id = safe_mode(route_id),
+    direction = safe_mode(direction),
+    vessel_id = safe_mode(vessel_id),
+    sched_start = min(scheduled_time_original, na.rm = TRUE),
+    sched_end = max(scheduled_time_original, na.rm = TRUE),
+    terminal_arrival_delay_min = arrival_delay_min[which.max(stop_sequence)][1],
+    .groups = "drop"
+  ) %>%
+  arrange(vessel_id, sched_start, trip_key) %>%
+  group_by(vessel_id) %>%
+  mutate(
+    previous_trip_key = lag(trip_key),
+    previous_sched_end = lag(sched_end),
+    previous_trip_terminal_arrival_delay = lag(terminal_arrival_delay_min),
+    gap_from_previous_sched_end_min = as.numeric(difftime(sched_start, previous_sched_end, units = "mins")),
+    eligible_inherited_pair = !is.na(previous_trip_key) & !is.na(vessel_id) & !is.na(gap_from_previous_sched_end_min) &
+      gap_from_previous_sched_end_min >= 0 & gap_from_previous_sched_end_min <= 30,
+    inherited_prev_trip_delay = if_else(eligible_inherited_pair, pmax(coalesce(previous_trip_terminal_arrival_delay, 0), 0), 0)
+  ) %>%
+  mutate(
+    vessel_trip_seq_in_chain = {
+      x <- rep(1, n())
+      if (n() > 1) for (j in 2:n()) x[j] <- ifelse(eligible_inherited_pair[j], x[j - 1] + 1, 1)
+      as.numeric(x)
+    },
+    # Chain starts should have no prior turnaround gap (NA), then downstream cap/fill applies.
+    planned_turnaround_gap_min = if_else(vessel_trip_seq_in_chain == 1, NA_real_, gap_from_previous_sched_end_min)
+  ) %>%
+  ungroup()
+
+decomp_tbl <- expected_tbl %>%
+  left_join(trip_summary %>% select(trip_key, inherited_prev_trip_delay, vessel_trip_seq_in_chain, planned_turnaround_gap_min), by = "trip_key") %>%
+  arrange(trip_key, stop_sequence) %>%
+  group_by(trip_key) %>%
+  mutate(
+    prev_stop_id = lag(stop_id),
+    prev_stop_name = lag(stop_name),
+    prev_stop_sequence = lag(stop_sequence),
+    prev_stop_scheduled_time_original = lag(scheduled_time_original),
+    prev_stop_sched_hour = as.numeric(hour(prev_stop_scheduled_time_original)),
+    prev_stop_sched_hour_group = hour_group_5bin(prev_stop_sched_hour),
+    from_stop_id = prev_stop_id,
+    to_stop_id = stop_id,
+    segment_id = segment_id_3digit(from_stop_id, to_stop_id),
+    is_terminal_stop = stop_sequence == max(stop_sequence, na.rm = TRUE),
+    prev_actual_arrival_time = lag(actual_arrival_time),
+    prev_actual_departure_time = lag(actual_departure_time),
+    prev_expected_arrival_time = lag(expected_arrival_time),
+    prev_expected_departure_time = lag(expected_departure_time),
+    prev_arrival_delay_min = lag(arrival_delay_min),
+    origin_departure_delay_total = departure_delay_min[which.min(stop_sequence)][1],
+    upstream_wait = pmax(0, as.numeric(difftime(prev_expected_arrival_time, prev_actual_arrival_time, units = "mins"))),
+    upstream_landside_delay = as.numeric(difftime(prev_actual_departure_time, pmax(prev_actual_arrival_time, prev_expected_arrival_time), units = "mins")) -
+      as.numeric(difftime(prev_expected_departure_time, prev_expected_arrival_time, units = "mins")),
+    upstream_waterside_delay = as.numeric(difftime(actual_arrival_time, prev_actual_departure_time, units = "mins")) -
+      as.numeric(difftime(expected_arrival_time, prev_expected_departure_time, units = "mins")),
+    carried_within_trip_delay = case_when(
+      stop_rank == 1 ~ 0,
+      stop_rank >= 2 ~ prev_arrival_delay_min - inherited_prev_trip_delay,
+      TRUE ~ NA_real_
+    ),
+    # Explicit business rule: second stop upstream_wait is always zero.
+    upstream_wait = if_else(stop_rank == 1, 0, upstream_wait),
+    # Unified upstream landside definition: second stop absorbs origin excess delay
+    # (origin departure delay minus inherited previous-trip delay).
+    upstream_landside_delay = if_else(stop_rank == 1, origin_departure_delay_total - inherited_prev_trip_delay, upstream_landside_delay),
+    expected_water_min = as.numeric(difftime(expected_arrival_time, prev_expected_departure_time, units = "mins"))
+  ) %>%
+  ungroup()
+```
+
+## Completeness Flags, Environment/AIS Merge, and Final Tables
+
+```{r}
+decomp_tbl <- decomp_tbl %>%
+  group_by(trip_key) %>%
+  arrange(stop_sequence, .by_group = TRUE) %>%
+  mutate(
+    origin_stop_sequence = min(stop_sequence, na.rm = TRUE),
+    terminal_stop_sequence = max(stop_sequence, na.rm = TRUE),
+    bad_arrival = is.na(actual_arrival_time) & stop_sequence != origin_stop_sequence,
+    bad_departure = is.na(actual_departure_time) & stop_sequence != terminal_stop_sequence,
+    bad_required_time = bad_arrival | bad_departure,
+    first_bad_stop_sequence = {
+      idx_bad <- which(bad_required_time)
+      if (length(idx_bad) > 0) min(stop_sequence[idx_bad], na.rm = TRUE) else NA_real_
+    },
+    trip_incomplete = any(bad_required_time),
+    model_ineligible_from_incomplete = if_else(trip_incomplete & !is.na(first_bad_stop_sequence), stop_sequence >= first_bad_stop_sequence, FALSE)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    boarding_wake = coalesce(boarding_wake, 0),
+    alightings_wake = coalesce(alightings_wake, 0)
+  ) %>%
+  group_by(trip_key) %>%
+  arrange(stop_sequence, .by_group = TRUE) %>%
+  mutate(
+    prev_stop_boardings = lag(boarding_wake),
+    prev_stop_alightings = lag(alightings_wake),
+    prev_stop_onboard = lag(onboard_raw)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    prev_stop_boardings = coalesce(prev_stop_boardings, 0),
+    prev_stop_alightings = coalesce(prev_stop_alightings, 0),
+    prev_stop_onboard = pmax(coalesce(prev_stop_onboard, 0), 0),
+    vessel_capacity = suppressWarnings(as.numeric(vessel_capacity)),
+    prev_stop_load_factor = if_else(!is.na(vessel_capacity) & vessel_capacity > 0, prev_stop_onboard / vessel_capacity, NA_real_)
+  )
+
+shared_map <- decomp_tbl %>%
+  filter(!is.na(trip_date), !is.na(stop_id), !is.na(route_id)) %>%
+  group_by(trip_date, stop_id) %>%
+  summarise(shared_flag = n_distinct(route_id) >= 2, .groups = "drop")
+
+decomp_tbl <- decomp_tbl %>%
+  left_join(shared_map %>% rename(from_stop_id = stop_id, prev_stop_shared_stop_flag = shared_flag), by = c("trip_date", "from_stop_id")) %>%
+  left_join(shared_map %>% rename(to_stop_id = stop_id, curr_stop_shared_stop_flag = shared_flag), by = c("trip_date", "to_stop_id"))
+
+decomp_tbl <- decomp_tbl %>%
+  arrange(trip_date, route_id, direction, from_stop_id, prev_stop_scheduled_time_original, trip_key) %>%
+  group_by(trip_date, route_id, direction, from_stop_id) %>%
+  mutate(scheduled_headway_min = as.numeric(difftime(prev_stop_scheduled_time_original, lag(prev_stop_scheduled_time_original), units = "mins"))) %>%
+  ungroup() %>%
+  mutate(
+    planned_turnaround_gap_min = if_else(is.na(planned_turnaround_gap_min) | planned_turnaround_gap_min > 30, 31, planned_turnaround_gap_min),
+    scheduled_headway_min = if_else(is.na(scheduled_headway_min) | scheduled_headway_min > 90, 91, scheduled_headway_min)
+  )
+
+env_hourly_utc <- build_hourly_env_utc(path_env)
+
+decomp_tbl <- decomp_tbl %>%
+  mutate(
+    prev_stop_sched_time_utc = with_tz(prev_stop_scheduled_time_original, tzone = TZ_UTC),
+    prev_stop_sched_hour_start_utc = floor_date(prev_stop_sched_time_utc, unit = "hour")
+  )
+
+decomp_tbl <- decomp_tbl %>%
+  left_join(env_hourly_utc, by = c("prev_stop_sched_hour_start_utc" = "env_hour_start_utc"))
+
+ais_hourly_utc <- build_hourly_ais_utc(path_ais)
+
+decomp_tbl <- decomp_tbl %>%
+  left_join(
+    ais_hourly_utc %>% rename(from_stop_id = stop_id, prev_stop_hourly_vessel_count_all = vessel_count),
+    by = c("from_stop_id", "prev_stop_sched_hour_start_utc" = "ais_hour_start_utc")
+  ) %>%
+  left_join(
+    ais_hourly_utc %>% rename(to_stop_id = stop_id, curr_stop_hourly_vessel_count_all = vessel_count),
+    by = c("to_stop_id", "prev_stop_sched_hour_start_utc" = "ais_hour_start_utc")
+  )
+
+# Convert display hour fields back to New York for final outputs.
+decomp_tbl <- decomp_tbl %>%
+  mutate(
+    prev_stop_sched_time_ny_display = with_tz(prev_stop_scheduled_time_original, tzone = TZ_NY),
+    prev_stop_sched_hour = as.numeric(hour(prev_stop_sched_time_ny_display)),
+    prev_stop_sched_hour_group = hour_group_5bin(prev_stop_sched_hour)
+  ) %>%
+  select(-prev_stop_sched_time_ny_display, -prev_stop_sched_time_utc, -prev_stop_sched_hour_start_utc)
+
+decomp_tbl <- decomp_tbl %>%
+  mutate(
+    row_id = paste0(as.character(trip_key), as.character(as.integer(stop_sequence))),
+    stop_sequence = as.numeric(stop_sequence),
+    prev_stop_sequence = as.numeric(prev_stop_sequence),
+    vessel_trip_seq_in_chain = as.numeric(vessel_trip_seq_in_chain)
+  ) %>%
+  relocate(row_id, .before = 1)
+
+output_tbl <- decomp_tbl %>%
+  filter(stop_sequence > 0)
+
+baseline_final <- output_tbl %>%
+  select(
+    row_id, trip_key, route_id, direction,
+    stop_sequence, prev_stop_sched_hour, prev_stop_sched_hour_group,
+    upstream_landside_delay, upstream_waterside_delay, lateness_vs_original_schedule_min,
+    inherited_prev_trip_delay, carried_within_trip_delay,
+    schedule_season, schedule_daytype,
+    vessel_trip_seq_in_chain, vessel_capacity,
+    from_stop_id, to_stop_id, segment_id,
+    is_terminal_stop, prev_stop_shared_stop_flag, curr_stop_shared_stop_flag,
+    planned_turnaround_gap_min, scheduled_headway_min, expected_water_min,
+    prev_stop_sequence, prev_stop_boardings, prev_stop_alightings, prev_stop_onboard,
+    prev_stop_load_factor,
+    env_temperature_c, env_wind_speed_mps, env_visibility_m, env_precipitation_mm,
+    env_battery_water_level_anomaly, env_narrows_current_residual, env_battery_water_level_obs, env_narrows_current_obs,
+    prev_stop_hourly_vessel_count_all, curr_stop_hourly_vessel_count_all,
+    trip_incomplete, model_ineligible_from_incomplete
+  ) %>%
+  arrange(trip_key, stop_sequence, row_id)
+
+decomp_final <- output_tbl %>%
+  mutate(
+    scheduled_time_original = with_tz(scheduled_time_original, tzone = TZ_NY),
+    prev_stop_scheduled_time_original = with_tz(prev_stop_scheduled_time_original, tzone = TZ_NY),
+    actual_arrival_time = with_tz(actual_arrival_time, tzone = TZ_NY),
+    actual_departure_time = with_tz(actual_departure_time, tzone = TZ_NY),
+    expected_arrival_time = with_tz(expected_arrival_time, tzone = TZ_NY),
+    expected_departure_time = with_tz(expected_departure_time, tzone = TZ_NY)
+  ) %>%
+  select(
+    row_id, trip_key, service_date = trip_date, route_id, direction,
+    stop_sequence, stop_id, stop_name, prev_stop_id, prev_stop_name,
+    schedule_season, schedule_daytype, prev_stop_sched_hour,
+    scheduled_time_original, prev_stop_scheduled_time_original,
+    actual_arrival_time, actual_departure_time, expected_arrival_time, expected_departure_time,
+    lateness_vs_original_schedule_min, arrival_delay_min, departure_delay_min,
+    inherited_prev_trip_delay, carried_within_trip_delay,
+    upstream_wait, upstream_landside_delay, upstream_waterside_delay
+  ) %>%
+  arrange(trip_key, stop_sequence, row_id)
+```
+
+## Write Outputs
+
+```{r}
+write_csv(lookup_output, out_lookup, na = "")
+write_csv(baseline_final, out_baseline, na = "")
+write_csv(decomp_final, out_decomp, na = "")
+
+write_parquet(lookup_output, out_lookup_parquet)
+write_parquet(baseline_final, out_baseline_parquet)
+write_parquet(decomp_final, out_decomp_parquet)
+
+sanity_first_row <- baseline_final %>%
+  slice(1) %>%
+  select(
+    row_id, trip_key, prev_stop_sched_hour,
+    prev_stop_hourly_vessel_count_all, curr_stop_hourly_vessel_count_all,
+    env_narrows_current_obs, env_temperature_c
+  )
+print(sanity_first_row)
+
+cat("Core internal time arithmetic and joins run in UTC.\n")
+cat("Output directory:", out_dir, "\n")
+cat("Written files:\n")
+cat("-", out_lookup, "\n")
+cat("-", out_lookup_parquet, "\n")
+cat("-", out_baseline, "\n")
+cat("-", out_baseline_parquet, "\n")
+cat("-", out_decomp, "\n")
+cat("-", out_decomp_parquet, "\n")
+```

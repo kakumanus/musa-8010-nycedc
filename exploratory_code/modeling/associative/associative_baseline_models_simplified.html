@@ -1,0 +1,2181 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.8.26">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+<meta name="author" content="Project Team">
+
+<title>Associative Baseline Models (Simplified)</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="associative_baseline_models_simplified_files/libs/clipboard/clipboard.min.js"></script>
+<script src="associative_baseline_models_simplified_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="associative_baseline_models_simplified_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="associative_baseline_models_simplified_files/libs/quarto-html/axe/axe-check.js" type="module"></script>
+<script src="associative_baseline_models_simplified_files/libs/quarto-html/popper.min.js"></script>
+<script src="associative_baseline_models_simplified_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="associative_baseline_models_simplified_files/libs/quarto-html/anchor.min.js"></script>
+<link href="associative_baseline_models_simplified_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="associative_baseline_models_simplified_files/libs/quarto-html/quarto-syntax-highlighting-587c61ba64f3a5504c4d52d930310e48.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="associative_baseline_models_simplified_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="associative_baseline_models_simplified_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="associative_baseline_models_simplified_files/libs/bootstrap/bootstrap-9e3ffae467580fdb927a41352e75a2e0.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="fullcontent quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Associative Baseline Models (Simplified)</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    <div>
+    <div class="quarto-title-meta-heading">Author</div>
+    <div class="quarto-title-meta-contents">
+             <p>Project Team </p>
+          </div>
+  </div>
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>required_pkgs <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"dplyr"</span>, <span class="st">"tidyr"</span>, <span class="st">"arrow"</span>, <span class="st">"broom"</span>, <span class="st">"knitr"</span>, <span class="st">"readr"</span>)</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>missing_pkgs <span class="ot">&lt;-</span> required_pkgs[<span class="sc">!</span><span class="fu">vapply</span>(required_pkgs, requireNamespace, <span class="fu">logical</span>(<span class="dv">1</span>), <span class="at">quietly =</span> <span class="cn">TRUE</span>)]</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> (<span class="fu">length</span>(missing_pkgs) <span class="sc">&gt;</span> <span class="dv">0</span>) <span class="fu">stop</span>(<span class="st">"Missing packages: "</span>, <span class="fu">paste</span>(missing_pkgs, <span class="at">collapse =</span> <span class="st">", "</span>))</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(dplyr)</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(tidyr)</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(arrow)</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(broom)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(knitr)</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(readr)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+<section id="purpose-and-setup" class="level2">
+<h2 class="anchored" data-anchor-id="purpose-and-setup">1) Purpose and Setup</h2>
+<p>This is an in-sample associative modeling report (no train/test/CV framing), with exactly 4 models:</p>
+<ol type="1">
+<li><code>baseline_linear_no_prior</code></li>
+<li><code>baseline_linear_with_prior</code></li>
+<li><code>logistic_no_prior</code></li>
+<li><code>logistic_with_prior</code></li>
+</ol>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb2"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="fu">set.seed</span>(<span class="dv">7900</span>)</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>input_parquet <span class="ot">&lt;-</span> <span class="st">"C:/Data/Spring 2026/CPLN 7900/explore/outputs/direct_pipeline_final_20260327/baseline_modeling_table_final_direct.parquet"</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>output_dir <span class="ot">&lt;-</span> <span class="st">"C:/Data/Spring 2026/CPLN 7900/explore/outputs/direct_pipeline_final_20260327/associative_baseline_models_20260328"</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="fu">dir.create</span>(output_dir, <span class="at">recursive =</span> <span class="cn">TRUE</span>, <span class="at">showWarnings =</span> <span class="cn">FALSE</span>)</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>outcome_cont <span class="ot">&lt;-</span> <span class="st">"lateness_vs_original_schedule_min"</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>binary_cut <span class="ot">&lt;-</span> <span class="dv">10</span></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Logistic threshold system:</span></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a><span class="co"># - set manual_prob_threshold to a numeric value to force manual threshold.</span></span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a><span class="co"># - keep NA to use automatic Youden-J threshold selection.</span></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>manual_prob_threshold <span class="ot">&lt;-</span> <span class="cn">NA_real_</span></span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="co"># Weekly local-time-slot imputation:</span></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a><span class="co"># interpreted as a 7-day centered window (±3 days) by local trip date.</span></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>week_window_days <span class="ot">&lt;-</span> <span class="dv">3</span></span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>base_predictors <span class="ot">&lt;-</span> <span class="fu">c</span>(</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>  <span class="st">"route_id"</span>, <span class="st">"direction"</span>, <span class="st">"stop_sequence"</span>, <span class="st">"prev_stop_sched_hour"</span>, <span class="st">"prev_stop_sched_hour_group"</span>,</span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>  <span class="st">"schedule_season"</span>, <span class="st">"schedule_daytype"</span>, <span class="st">"vessel_trip_seq_in_chain"</span>, <span class="st">"vessel_capacity"</span>,</span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>  <span class="st">"is_terminal_stop"</span>, <span class="st">"prev_stop_shared_stop_flag"</span>, <span class="st">"curr_stop_shared_stop_flag"</span>,</span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a>  <span class="st">"planned_turnaround_gap_min"</span>, <span class="st">"scheduled_headway_min"</span>, <span class="st">"expected_water_min"</span>,</span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a>  <span class="st">"prev_stop_sequence"</span>, <span class="st">"prev_stop_boardings"</span>, <span class="st">"prev_stop_alightings"</span>, <span class="st">"prev_stop_onboard"</span>,</span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a>  <span class="st">"prev_stop_load_factor"</span>, <span class="st">"env_temperature_c"</span>, <span class="st">"env_wind_speed_mps"</span>, <span class="st">"env_visibility_m"</span>,</span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a>  <span class="st">"env_precipitation_mm"</span>, <span class="st">"env_battery_water_level_anomaly"</span>, <span class="st">"env_narrows_current_residual"</span>,</span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>  <span class="st">"env_battery_water_level_obs"</span>, <span class="st">"env_narrows_current_obs"</span>,</span>
+<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a>  <span class="st">"prev_stop_hourly_vessel_count_all"</span>, <span class="st">"curr_stop_hourly_vessel_count_all"</span></span>
+<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a>prior_delay_predictors <span class="ot">&lt;-</span> <span class="fu">c</span>(<span class="st">"inherited_prev_trip_delay"</span>, <span class="st">"carried_within_trip_delay"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</section>
+<section id="data-loading-and-variable-setup" class="level2">
+<h2 class="anchored" data-anchor-id="data-loading-and-variable-setup">2) Data Loading and Variable Setup</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb3"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">file.exists</span>(input_parquet)) <span class="fu">stop</span>(<span class="st">"Missing input parquet: "</span>, input_parquet)</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>df_raw <span class="ot">&lt;-</span> <span class="fu">read_parquet</span>(input_parquet) <span class="sc">%&gt;%</span> <span class="fu">as_tibble</span>()</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>df <span class="ot">&lt;-</span> df_raw <span class="sc">%&gt;%</span></span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    <span class="at">trip_date =</span> <span class="fu">as.Date</span>(<span class="fu">substr</span>(<span class="fu">as.character</span>(trip_key), <span class="dv">1</span>, <span class="dv">8</span>), <span class="at">format =</span> <span class="st">"%Y%m%d"</span>)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>predictors_no_prior <span class="ot">&lt;-</span> <span class="fu">intersect</span>(base_predictors, <span class="fu">names</span>(df))</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>predictors_with_prior <span class="ot">&lt;-</span> <span class="fu">unique</span>(<span class="fu">c</span>(predictors_no_prior, <span class="fu">intersect</span>(prior_delay_predictors, <span class="fu">names</span>(df))))</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="fu">tibble</span>(</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>  <span class="at">input_rows =</span> <span class="fu">nrow</span>(df_raw),</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>  <span class="at">rows_after_load =</span> <span class="fu">nrow</span>(df),</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>  <span class="at">predictors_no_prior_n =</span> <span class="fu">length</span>(predictors_no_prior),</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>  <span class="at">predictors_with_prior_n =</span> <span class="fu">length</span>(predictors_with_prior)</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>) <span class="sc">%&gt;%</span> <span class="fu">kable</span>(<span class="at">caption =</span> <span class="st">"Data and Predictor Setup"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output-display">
+<table class="caption-top table table-sm table-striped small">
+<caption>Data and Predictor Setup</caption>
+<colgroup>
+<col style="width: 15%">
+<col style="width: 21%">
+<col style="width: 30%">
+<col style="width: 32%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: right;">input_rows</th>
+<th style="text-align: right;">rows_after_load</th>
+<th style="text-align: right;">predictors_no_prior_n</th>
+<th style="text-align: right;">predictors_with_prior_n</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: right;">613071</td>
+<td style="text-align: right;">613071</td>
+<td style="text-align: right;">30</td>
+<td style="text-align: right;">32</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<section id="aisenvironment-missing-value-imputation-rule" class="level2">
+<h2 class="anchored" data-anchor-id="aisenvironment-missing-value-imputation-rule">3) AIS/Environment Missing-Value Imputation Rule</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb4"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>build_week_fill_map <span class="ot">&lt;-</span> <span class="cf">function</span>(day_slot_tbl, group_col, <span class="at">date_col =</span> <span class="st">"trip_date"</span>, <span class="at">value_col =</span> <span class="st">"slot_day_median"</span>, <span class="at">window_days =</span> <span class="dv">3</span>) {</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="fu">nrow</span>(day_slot_tbl) <span class="sc">==</span> <span class="dv">0</span>) <span class="fu">return</span>(<span class="fu">tibble</span>())</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  split_tbl <span class="ot">&lt;-</span> <span class="fu">split</span>(day_slot_tbl, day_slot_tbl[[group_col]], <span class="at">drop =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>  out <span class="ot">&lt;-</span> <span class="fu">lapply</span>(split_tbl, <span class="cf">function</span>(gdf) {</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    gdf <span class="ot">&lt;-</span> gdf[<span class="fu">order</span>(gdf[[date_col]]), , drop <span class="ot">=</span> <span class="cn">FALSE</span>]</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    d <span class="ot">&lt;-</span> gdf[[date_col]]</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    v <span class="ot">&lt;-</span> gdf[[value_col]]</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    week_fill <span class="ot">&lt;-</span> <span class="fu">vapply</span>(<span class="fu">seq_along</span>(v), <span class="cf">function</span>(i) {</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>      idx <span class="ot">&lt;-</span> <span class="fu">abs</span>(<span class="fu">as.integer</span>(d <span class="sc">-</span> d[i])) <span class="sc">&lt;=</span> window_days</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>      val <span class="ot">&lt;-</span> <span class="fu">suppressWarnings</span>(<span class="fu">median</span>(v[idx], <span class="at">na.rm =</span> <span class="cn">TRUE</span>))</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>      <span class="fu">ifelse</span>(<span class="fu">is.finite</span>(val), val, <span class="cn">NA_real_</span>)</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    }, <span class="fu">numeric</span>(<span class="dv">1</span>))</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>    gdf<span class="sc">$</span>week_fill <span class="ot">&lt;-</span> week_fill</span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>    gdf[, <span class="fu">c</span>(group_col, date_col, <span class="st">"week_fill"</span>), drop <span class="ot">=</span> <span class="cn">FALSE</span>]</span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>  })</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>  <span class="fu">bind_rows</span>(out)</span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>impute_by_local_slot_week <span class="ot">&lt;-</span> <span class="cf">function</span>(data, var_name, <span class="at">window_days =</span> <span class="dv">3</span>) {</span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>  x <span class="ot">&lt;-</span> data</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a>  miss_before <span class="ot">&lt;-</span> <span class="fu">sum</span>(<span class="fu">is.na</span>(x[[var_name]]))</span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (miss_before <span class="sc">==</span> <span class="dv">0</span>) {</span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a>    <span class="fu">return</span>(<span class="fu">list</span>(<span class="at">data =</span> x, <span class="at">summary =</span> <span class="fu">tibble</span>(<span class="at">variable =</span> var_name, <span class="at">n_missing_before =</span> <span class="dv">0</span>L, <span class="at">n_filled_primary =</span> <span class="dv">0</span>L, <span class="at">n_filled_fallback =</span> <span class="dv">0</span>L, <span class="at">n_missing_after =</span> <span class="dv">0</span>L)))</span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Primary: same local hour within centered 7-day window (±3 days by default).</span></span>
+<span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a>  primary_daily <span class="ot">&lt;-</span> x <span class="sc">%&gt;%</span></span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a>    <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(.data[[var_name]]), <span class="sc">!</span><span class="fu">is.na</span>(trip_date), <span class="sc">!</span><span class="fu">is.na</span>(prev_stop_sched_hour)) <span class="sc">%&gt;%</span></span>
+<span id="cb4-29"><a href="#cb4-29" aria-hidden="true" tabindex="-1"></a>    <span class="fu">group_by</span>(prev_stop_sched_hour, trip_date) <span class="sc">%&gt;%</span></span>
+<span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a>    <span class="fu">summarise</span>(<span class="at">slot_day_median =</span> <span class="fu">median</span>(.data[[var_name]], <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="at">.groups =</span> <span class="st">"drop"</span>)</span>
+<span id="cb4-31"><a href="#cb4-31" aria-hidden="true" tabindex="-1"></a>  primary_fill <span class="ot">&lt;-</span> <span class="fu">build_week_fill_map</span>(primary_daily, <span class="at">group_col =</span> <span class="st">"prev_stop_sched_hour"</span>, <span class="at">value_col =</span> <span class="st">"slot_day_median"</span>, <span class="at">window_days =</span> window_days) <span class="sc">%&gt;%</span></span>
+<span id="cb4-32"><a href="#cb4-32" aria-hidden="true" tabindex="-1"></a>    <span class="fu">rename</span>(<span class="at">fill_primary =</span> week_fill)</span>
+<span id="cb4-33"><a href="#cb4-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-34"><a href="#cb4-34" aria-hidden="true" tabindex="-1"></a>  <span class="co"># Fallback: same local hour-group within centered 7-day window.</span></span>
+<span id="cb4-35"><a href="#cb4-35" aria-hidden="true" tabindex="-1"></a>  fallback_daily <span class="ot">&lt;-</span> x <span class="sc">%&gt;%</span></span>
+<span id="cb4-36"><a href="#cb4-36" aria-hidden="true" tabindex="-1"></a>    <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(.data[[var_name]]), <span class="sc">!</span><span class="fu">is.na</span>(trip_date), <span class="sc">!</span><span class="fu">is.na</span>(prev_stop_sched_hour_group)) <span class="sc">%&gt;%</span></span>
+<span id="cb4-37"><a href="#cb4-37" aria-hidden="true" tabindex="-1"></a>    <span class="fu">group_by</span>(prev_stop_sched_hour_group, trip_date) <span class="sc">%&gt;%</span></span>
+<span id="cb4-38"><a href="#cb4-38" aria-hidden="true" tabindex="-1"></a>    <span class="fu">summarise</span>(<span class="at">slot_day_median =</span> <span class="fu">median</span>(.data[[var_name]], <span class="at">na.rm =</span> <span class="cn">TRUE</span>), <span class="at">.groups =</span> <span class="st">"drop"</span>)</span>
+<span id="cb4-39"><a href="#cb4-39" aria-hidden="true" tabindex="-1"></a>  fallback_fill <span class="ot">&lt;-</span> <span class="fu">build_week_fill_map</span>(fallback_daily, <span class="at">group_col =</span> <span class="st">"prev_stop_sched_hour_group"</span>, <span class="at">value_col =</span> <span class="st">"slot_day_median"</span>, <span class="at">window_days =</span> window_days) <span class="sc">%&gt;%</span></span>
+<span id="cb4-40"><a href="#cb4-40" aria-hidden="true" tabindex="-1"></a>    <span class="fu">rename</span>(<span class="at">fill_fallback =</span> week_fill)</span>
+<span id="cb4-41"><a href="#cb4-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-42"><a href="#cb4-42" aria-hidden="true" tabindex="-1"></a>  x <span class="ot">&lt;-</span> x <span class="sc">%&gt;%</span></span>
+<span id="cb4-43"><a href="#cb4-43" aria-hidden="true" tabindex="-1"></a>    <span class="fu">left_join</span>(primary_fill, <span class="at">by =</span> <span class="fu">c</span>(<span class="st">"prev_stop_sched_hour"</span>, <span class="st">"trip_date"</span>)) <span class="sc">%&gt;%</span></span>
+<span id="cb4-44"><a href="#cb4-44" aria-hidden="true" tabindex="-1"></a>    <span class="fu">left_join</span>(fallback_fill, <span class="at">by =</span> <span class="fu">c</span>(<span class="st">"prev_stop_sched_hour_group"</span>, <span class="st">"trip_date"</span>))</span>
+<span id="cb4-45"><a href="#cb4-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-46"><a href="#cb4-46" aria-hidden="true" tabindex="-1"></a>  was_missing <span class="ot">&lt;-</span> <span class="fu">is.na</span>(x[[var_name]])</span>
+<span id="cb4-47"><a href="#cb4-47" aria-hidden="true" tabindex="-1"></a>  fill_primary_idx <span class="ot">&lt;-</span> was_missing <span class="sc">&amp;</span> <span class="sc">!</span><span class="fu">is.na</span>(x<span class="sc">$</span>fill_primary)</span>
+<span id="cb4-48"><a href="#cb4-48" aria-hidden="true" tabindex="-1"></a>  fill_fallback_idx <span class="ot">&lt;-</span> was_missing <span class="sc">&amp;</span> <span class="fu">is.na</span>(x<span class="sc">$</span>fill_primary) <span class="sc">&amp;</span> <span class="sc">!</span><span class="fu">is.na</span>(x<span class="sc">$</span>fill_fallback)</span>
+<span id="cb4-49"><a href="#cb4-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-50"><a href="#cb4-50" aria-hidden="true" tabindex="-1"></a>  x[[var_name]][fill_primary_idx] <span class="ot">&lt;-</span> x<span class="sc">$</span>fill_primary[fill_primary_idx]</span>
+<span id="cb4-51"><a href="#cb4-51" aria-hidden="true" tabindex="-1"></a>  x[[var_name]][fill_fallback_idx] <span class="ot">&lt;-</span> x<span class="sc">$</span>fill_fallback[fill_fallback_idx]</span>
+<span id="cb4-52"><a href="#cb4-52" aria-hidden="true" tabindex="-1"></a>  x <span class="ot">&lt;-</span> x <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="sc">-</span>fill_primary, <span class="sc">-</span>fill_fallback)</span>
+<span id="cb4-53"><a href="#cb4-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-54"><a href="#cb4-54" aria-hidden="true" tabindex="-1"></a>  <span class="fu">list</span>(</span>
+<span id="cb4-55"><a href="#cb4-55" aria-hidden="true" tabindex="-1"></a>    <span class="at">data =</span> x,</span>
+<span id="cb4-56"><a href="#cb4-56" aria-hidden="true" tabindex="-1"></a>    <span class="at">summary =</span> <span class="fu">tibble</span>(</span>
+<span id="cb4-57"><a href="#cb4-57" aria-hidden="true" tabindex="-1"></a>      <span class="at">variable =</span> var_name,</span>
+<span id="cb4-58"><a href="#cb4-58" aria-hidden="true" tabindex="-1"></a>      <span class="at">n_missing_before =</span> miss_before,</span>
+<span id="cb4-59"><a href="#cb4-59" aria-hidden="true" tabindex="-1"></a>      <span class="at">n_filled_primary =</span> <span class="fu">sum</span>(fill_primary_idx, <span class="at">na.rm =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb4-60"><a href="#cb4-60" aria-hidden="true" tabindex="-1"></a>      <span class="at">n_filled_fallback =</span> <span class="fu">sum</span>(fill_fallback_idx, <span class="at">na.rm =</span> <span class="cn">TRUE</span>),</span>
+<span id="cb4-61"><a href="#cb4-61" aria-hidden="true" tabindex="-1"></a>      <span class="at">n_missing_after =</span> <span class="fu">sum</span>(<span class="fu">is.na</span>(x[[var_name]]))</span>
+<span id="cb4-62"><a href="#cb4-62" aria-hidden="true" tabindex="-1"></a>    )</span>
+<span id="cb4-63"><a href="#cb4-63" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb4-64"><a href="#cb4-64" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb4-65"><a href="#cb4-65" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-66"><a href="#cb4-66" aria-hidden="true" tabindex="-1"></a>impute_vars <span class="ot">&lt;-</span> <span class="fu">intersect</span>(</span>
+<span id="cb4-67"><a href="#cb4-67" aria-hidden="true" tabindex="-1"></a>  <span class="fu">c</span>(</span>
+<span id="cb4-68"><a href="#cb4-68" aria-hidden="true" tabindex="-1"></a>    <span class="fu">names</span>(df)[<span class="fu">grepl</span>(<span class="st">"^env_"</span>, <span class="fu">names</span>(df))],</span>
+<span id="cb4-69"><a href="#cb4-69" aria-hidden="true" tabindex="-1"></a>    <span class="st">"prev_stop_hourly_vessel_count_all"</span>,</span>
+<span id="cb4-70"><a href="#cb4-70" aria-hidden="true" tabindex="-1"></a>    <span class="st">"curr_stop_hourly_vessel_count_all"</span></span>
+<span id="cb4-71"><a href="#cb4-71" aria-hidden="true" tabindex="-1"></a>  ),</span>
+<span id="cb4-72"><a href="#cb4-72" aria-hidden="true" tabindex="-1"></a>  <span class="fu">names</span>(df)</span>
+<span id="cb4-73"><a href="#cb4-73" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb4-74"><a href="#cb4-74" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-75"><a href="#cb4-75" aria-hidden="true" tabindex="-1"></a>impute_summary_list <span class="ot">&lt;-</span> <span class="fu">list</span>()</span>
+<span id="cb4-76"><a href="#cb4-76" aria-hidden="true" tabindex="-1"></a>df_imp <span class="ot">&lt;-</span> df</span>
+<span id="cb4-77"><a href="#cb4-77" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> (v <span class="cf">in</span> impute_vars) {</span>
+<span id="cb4-78"><a href="#cb4-78" aria-hidden="true" tabindex="-1"></a>  res <span class="ot">&lt;-</span> <span class="fu">impute_by_local_slot_week</span>(df_imp, v, <span class="at">window_days =</span> week_window_days)</span>
+<span id="cb4-79"><a href="#cb4-79" aria-hidden="true" tabindex="-1"></a>  df_imp <span class="ot">&lt;-</span> res<span class="sc">$</span>data</span>
+<span id="cb4-80"><a href="#cb4-80" aria-hidden="true" tabindex="-1"></a>  impute_summary_list[[<span class="fu">length</span>(impute_summary_list) <span class="sc">+</span> <span class="dv">1</span>]] <span class="ot">&lt;-</span> res<span class="sc">$</span>summary</span>
+<span id="cb4-81"><a href="#cb4-81" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb4-82"><a href="#cb4-82" aria-hidden="true" tabindex="-1"></a>imputation_summary <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(impute_summary_list)</span>
+<span id="cb4-83"><a href="#cb4-83" aria-hidden="true" tabindex="-1"></a>imputation_summary <span class="sc">%&gt;%</span> <span class="fu">kable</span>(<span class="at">caption =</span> <span class="st">"AIS/Environment Imputation Summary"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output-display">
+<table class="caption-top table table-sm table-striped small">
+<caption>AIS/Environment Imputation Summary</caption>
+<colgroup>
+<col style="width: 33%">
+<col style="width: 16%">
+<col style="width: 16%">
+<col style="width: 17%">
+<col style="width: 15%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">variable</th>
+<th style="text-align: right;">n_missing_before</th>
+<th style="text-align: right;">n_filled_primary</th>
+<th style="text-align: right;">n_filled_fallback</th>
+<th style="text-align: right;">n_missing_after</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">env_temperature_c</td>
+<td style="text-align: right;">482</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">283</td>
+<td style="text-align: right;">199</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">env_wind_speed_mps</td>
+<td style="text-align: right;">1116</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">917</td>
+<td style="text-align: right;">199</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">env_visibility_m</td>
+<td style="text-align: right;">567</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">368</td>
+<td style="text-align: right;">199</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">env_precipitation_mm</td>
+<td style="text-align: right;">373</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">174</td>
+<td style="text-align: right;">199</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">env_battery_water_level_anomaly</td>
+<td style="text-align: right;">373</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">174</td>
+<td style="text-align: right;">199</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">env_narrows_current_residual</td>
+<td style="text-align: right;">52071</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">48636</td>
+<td style="text-align: right;">3435</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">env_battery_water_level_obs</td>
+<td style="text-align: right;">373</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">174</td>
+<td style="text-align: right;">199</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">env_narrows_current_obs</td>
+<td style="text-align: right;">52071</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">48636</td>
+<td style="text-align: right;">3435</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_hourly_vessel_count_all</td>
+<td style="text-align: right;">107</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">107</td>
+<td style="text-align: right;">0</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">curr_stop_hourly_vessel_count_all</td>
+<td style="text-align: right;">107</td>
+<td style="text-align: right;">0</td>
+<td style="text-align: right;">107</td>
+<td style="text-align: right;">0</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<section id="helper-functions" class="level2">
+<h2 class="anchored" data-anchor-id="helper-functions">4) Helper Functions</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a>prepare_model_df <span class="ot">&lt;-</span> <span class="cf">function</span>(data, outcome, predictors) {</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  data <span class="sc">%&gt;%</span> <span class="fu">select</span>(<span class="fu">all_of</span>(<span class="fu">c</span>(outcome, predictors))) <span class="sc">%&gt;%</span> <span class="fu">drop_na</span>()</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>choose_logistic_threshold <span class="ot">&lt;-</span> <span class="cf">function</span>(y, p, <span class="at">manual_threshold =</span> <span class="cn">NA_real_</span>) {</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>  <span class="cf">if</span> (<span class="sc">!</span><span class="fu">is.na</span>(manual_threshold)) {</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">return</span>(<span class="fu">list</span>(<span class="at">threshold =</span> manual_threshold, <span class="at">mode =</span> <span class="st">"manual"</span>))</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>  thresholds <span class="ot">&lt;-</span> <span class="fu">seq</span>(<span class="fl">0.01</span>, <span class="fl">0.99</span>, <span class="at">by =</span> <span class="fl">0.01</span>)</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>  j_tbl <span class="ot">&lt;-</span> <span class="fu">lapply</span>(thresholds, <span class="cf">function</span>(t) {</span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>    pred <span class="ot">&lt;-</span> <span class="fu">ifelse</span>(p <span class="sc">&gt;=</span> t, <span class="dv">1</span>L, <span class="dv">0</span>L)</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>    tp <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">1</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">1</span>L); tn <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">0</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">0</span>L)</span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>    fp <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">1</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">0</span>L); fn <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">0</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">1</span>L)</span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a>    sens <span class="ot">&lt;-</span> <span class="fu">ifelse</span>((tp <span class="sc">+</span> fn) <span class="sc">&gt;</span> <span class="dv">0</span>, tp <span class="sc">/</span> (tp <span class="sc">+</span> fn), <span class="cn">NA_real_</span>)</span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a>    spec <span class="ot">&lt;-</span> <span class="fu">ifelse</span>((tn <span class="sc">+</span> fp) <span class="sc">&gt;</span> <span class="dv">0</span>, tn <span class="sc">/</span> (tn <span class="sc">+</span> fp), <span class="cn">NA_real_</span>)</span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a>    <span class="fu">tibble</span>(<span class="at">threshold =</span> t, <span class="at">sensitivity =</span> sens, <span class="at">specificity =</span> spec, <span class="at">youden_j =</span> sens <span class="sc">+</span> spec <span class="sc">-</span> <span class="dv">1</span>)</span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>  }) <span class="sc">%&gt;%</span> <span class="fu">bind_rows</span>() <span class="sc">%&gt;%</span> <span class="fu">filter</span>(<span class="sc">!</span><span class="fu">is.na</span>(youden_j))</span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>  best <span class="ot">&lt;-</span> j_tbl <span class="sc">%&gt;%</span> <span class="fu">arrange</span>(<span class="fu">desc</span>(youden_j), <span class="fu">abs</span>(threshold <span class="sc">-</span> <span class="fl">0.5</span>)) <span class="sc">%&gt;%</span> <span class="fu">slice</span>(<span class="dv">1</span>)</span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>  <span class="fu">list</span>(<span class="at">threshold =</span> best<span class="sc">$</span>threshold[[<span class="dv">1</span>]], <span class="at">mode =</span> <span class="st">"youden_j_auto"</span>)</span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a>fit_linear <span class="ot">&lt;-</span> <span class="cf">function</span>(data, model_name, outcome, predictors) {</span>
+<span id="cb5-23"><a href="#cb5-23" aria-hidden="true" tabindex="-1"></a>  d <span class="ot">&lt;-</span> <span class="fu">prepare_model_df</span>(data, outcome, predictors)</span>
+<span id="cb5-24"><a href="#cb5-24" aria-hidden="true" tabindex="-1"></a>  fml <span class="ot">&lt;-</span> <span class="fu">as.formula</span>(<span class="fu">paste</span>(outcome, <span class="st">"~"</span>, <span class="fu">paste</span>(predictors, <span class="at">collapse =</span> <span class="st">" + "</span>)))</span>
+<span id="cb5-25"><a href="#cb5-25" aria-hidden="true" tabindex="-1"></a>  fit <span class="ot">&lt;-</span> <span class="fu">lm</span>(fml, <span class="at">data =</span> d)</span>
+<span id="cb5-26"><a href="#cb5-26" aria-hidden="true" tabindex="-1"></a>  pred <span class="ot">&lt;-</span> <span class="fu">predict</span>(fit, <span class="at">newdata =</span> d)</span>
+<span id="cb5-27"><a href="#cb5-27" aria-hidden="true" tabindex="-1"></a>  rmse <span class="ot">&lt;-</span> <span class="fu">sqrt</span>(<span class="fu">mean</span>((d[[outcome]] <span class="sc">-</span> pred)<span class="sc">^</span><span class="dv">2</span>))</span>
+<span id="cb5-28"><a href="#cb5-28" aria-hidden="true" tabindex="-1"></a>  g <span class="ot">&lt;-</span> <span class="fu">glance</span>(fit)</span>
+<span id="cb5-29"><a href="#cb5-29" aria-hidden="true" tabindex="-1"></a>  <span class="fu">list</span>(</span>
+<span id="cb5-30"><a href="#cb5-30" aria-hidden="true" tabindex="-1"></a>    <span class="at">metrics =</span> <span class="fu">tibble</span>(</span>
+<span id="cb5-31"><a href="#cb5-31" aria-hidden="true" tabindex="-1"></a>      <span class="at">model_name =</span> model_name, <span class="at">model_type =</span> <span class="st">"linear"</span>, <span class="at">prior_delay_included =</span> <span class="fu">ifelse</span>(<span class="fu">grepl</span>(<span class="st">"with_prior"</span>, model_name), <span class="st">"yes"</span>, <span class="st">"no"</span>),</span>
+<span id="cb5-32"><a href="#cb5-32" aria-hidden="true" tabindex="-1"></a>      <span class="at">n =</span> <span class="fu">nrow</span>(d), <span class="at">aic =</span> g<span class="sc">$</span>AIC, <span class="at">bic =</span> g<span class="sc">$</span>BIC, <span class="at">rsq =</span> g<span class="sc">$</span>r.squared, <span class="at">adj_rsq =</span> g<span class="sc">$</span>adj.r.squared, <span class="at">rmse =</span> rmse,</span>
+<span id="cb5-33"><a href="#cb5-33" aria-hidden="true" tabindex="-1"></a>      <span class="at">pseudo_rsq =</span> <span class="cn">NA_real_</span>, <span class="at">accuracy =</span> <span class="cn">NA_real_</span>, <span class="at">sensitivity =</span> <span class="cn">NA_real_</span>, <span class="at">specificity =</span> <span class="cn">NA_real_</span>, <span class="at">auc =</span> <span class="cn">NA_real_</span></span>
+<span id="cb5-34"><a href="#cb5-34" aria-hidden="true" tabindex="-1"></a>    ),</span>
+<span id="cb5-35"><a href="#cb5-35" aria-hidden="true" tabindex="-1"></a>    <span class="at">coefs =</span> <span class="fu">tidy</span>(fit) <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">model_name =</span> model_name, <span class="at">model_type =</span> <span class="st">"linear"</span>),</span>
+<span id="cb5-36"><a href="#cb5-36" aria-hidden="true" tabindex="-1"></a>    <span class="at">formula_text =</span> <span class="fu">paste</span>(<span class="fu">deparse</span>(fml), <span class="at">collapse =</span> <span class="st">""</span>)</span>
+<span id="cb5-37"><a href="#cb5-37" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb5-38"><a href="#cb5-38" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb5-39"><a href="#cb5-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-40"><a href="#cb5-40" aria-hidden="true" tabindex="-1"></a>fit_logistic <span class="ot">&lt;-</span> <span class="cf">function</span>(data, model_name, outcome_binary, predictors, <span class="at">manual_threshold =</span> <span class="cn">NA_real_</span>) {</span>
+<span id="cb5-41"><a href="#cb5-41" aria-hidden="true" tabindex="-1"></a>  d <span class="ot">&lt;-</span> <span class="fu">prepare_model_df</span>(data, outcome_binary, predictors)</span>
+<span id="cb5-42"><a href="#cb5-42" aria-hidden="true" tabindex="-1"></a>  fml <span class="ot">&lt;-</span> <span class="fu">as.formula</span>(<span class="fu">paste</span>(outcome_binary, <span class="st">"~"</span>, <span class="fu">paste</span>(predictors, <span class="at">collapse =</span> <span class="st">" + "</span>)))</span>
+<span id="cb5-43"><a href="#cb5-43" aria-hidden="true" tabindex="-1"></a>  fit <span class="ot">&lt;-</span> <span class="fu">glm</span>(fml, <span class="at">data =</span> d, <span class="at">family =</span> <span class="fu">binomial</span>())</span>
+<span id="cb5-44"><a href="#cb5-44" aria-hidden="true" tabindex="-1"></a>  p <span class="ot">&lt;-</span> <span class="fu">as.numeric</span>(<span class="fu">predict</span>(fit, <span class="at">newdata =</span> d, <span class="at">type =</span> <span class="st">"response"</span>))</span>
+<span id="cb5-45"><a href="#cb5-45" aria-hidden="true" tabindex="-1"></a>  y <span class="ot">&lt;-</span> <span class="fu">as.integer</span>(d[[outcome_binary]])</span>
+<span id="cb5-46"><a href="#cb5-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-47"><a href="#cb5-47" aria-hidden="true" tabindex="-1"></a>  thr <span class="ot">&lt;-</span> <span class="fu">choose_logistic_threshold</span>(y, p, <span class="at">manual_threshold =</span> manual_threshold)</span>
+<span id="cb5-48"><a href="#cb5-48" aria-hidden="true" tabindex="-1"></a>  pred <span class="ot">&lt;-</span> <span class="fu">ifelse</span>(p <span class="sc">&gt;=</span> thr<span class="sc">$</span>threshold, <span class="dv">1</span>L, <span class="dv">0</span>L)</span>
+<span id="cb5-49"><a href="#cb5-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-50"><a href="#cb5-50" aria-hidden="true" tabindex="-1"></a>  tp <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">1</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">1</span>L); tn <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">0</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">0</span>L)</span>
+<span id="cb5-51"><a href="#cb5-51" aria-hidden="true" tabindex="-1"></a>  fp <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">1</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">0</span>L); fn <span class="ot">&lt;-</span> <span class="fu">sum</span>(pred <span class="sc">==</span> <span class="dv">0</span>L <span class="sc">&amp;</span> y <span class="sc">==</span> <span class="dv">1</span>L)</span>
+<span id="cb5-52"><a href="#cb5-52" aria-hidden="true" tabindex="-1"></a>  sens <span class="ot">&lt;-</span> <span class="fu">ifelse</span>((tp <span class="sc">+</span> fn) <span class="sc">&gt;</span> <span class="dv">0</span>, tp <span class="sc">/</span> (tp <span class="sc">+</span> fn), <span class="cn">NA_real_</span>)</span>
+<span id="cb5-53"><a href="#cb5-53" aria-hidden="true" tabindex="-1"></a>  spec <span class="ot">&lt;-</span> <span class="fu">ifelse</span>((tn <span class="sc">+</span> fp) <span class="sc">&gt;</span> <span class="dv">0</span>, tn <span class="sc">/</span> (tn <span class="sc">+</span> fp), <span class="cn">NA_real_</span>)</span>
+<span id="cb5-54"><a href="#cb5-54" aria-hidden="true" tabindex="-1"></a>  acc <span class="ot">&lt;-</span> (tp <span class="sc">+</span> tn) <span class="sc">/</span> <span class="fu">nrow</span>(d)</span>
+<span id="cb5-55"><a href="#cb5-55" aria-hidden="true" tabindex="-1"></a>  null_fit <span class="ot">&lt;-</span> <span class="fu">glm</span>(<span class="fu">as.formula</span>(<span class="fu">paste</span>(outcome_binary, <span class="st">"~ 1"</span>)), <span class="at">data =</span> d, <span class="at">family =</span> <span class="fu">binomial</span>())</span>
+<span id="cb5-56"><a href="#cb5-56" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-57"><a href="#cb5-57" aria-hidden="true" tabindex="-1"></a>  n_pos <span class="ot">&lt;-</span> <span class="fu">sum</span>(y <span class="sc">==</span> <span class="dv">1</span>L); n_neg <span class="ot">&lt;-</span> <span class="fu">sum</span>(y <span class="sc">==</span> <span class="dv">0</span>L)</span>
+<span id="cb5-58"><a href="#cb5-58" aria-hidden="true" tabindex="-1"></a>  auc_rank <span class="ot">&lt;-</span> <span class="cf">if</span> (n_pos <span class="sc">==</span> <span class="dv">0</span> <span class="sc">||</span> n_neg <span class="sc">==</span> <span class="dv">0</span>) <span class="cn">NA_real_</span> <span class="cf">else</span> {</span>
+<span id="cb5-59"><a href="#cb5-59" aria-hidden="true" tabindex="-1"></a>    r <span class="ot">&lt;-</span> <span class="fu">rank</span>(p, <span class="at">ties.method =</span> <span class="st">"average"</span>)</span>
+<span id="cb5-60"><a href="#cb5-60" aria-hidden="true" tabindex="-1"></a>    (<span class="fu">sum</span>(r[y <span class="sc">==</span> <span class="dv">1</span>L]) <span class="sc">-</span> n_pos <span class="sc">*</span> (n_pos <span class="sc">+</span> <span class="dv">1</span>) <span class="sc">/</span> <span class="dv">2</span>) <span class="sc">/</span> (n_pos <span class="sc">*</span> n_neg)</span>
+<span id="cb5-61"><a href="#cb5-61" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb5-62"><a href="#cb5-62" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-63"><a href="#cb5-63" aria-hidden="true" tabindex="-1"></a>  g <span class="ot">&lt;-</span> <span class="fu">glance</span>(fit)</span>
+<span id="cb5-64"><a href="#cb5-64" aria-hidden="true" tabindex="-1"></a>  <span class="fu">list</span>(</span>
+<span id="cb5-65"><a href="#cb5-65" aria-hidden="true" tabindex="-1"></a>    <span class="at">metrics =</span> <span class="fu">tibble</span>(</span>
+<span id="cb5-66"><a href="#cb5-66" aria-hidden="true" tabindex="-1"></a>      <span class="at">model_name =</span> model_name, <span class="at">model_type =</span> <span class="st">"logistic"</span>, <span class="at">prior_delay_included =</span> <span class="fu">ifelse</span>(<span class="fu">grepl</span>(<span class="st">"with_prior"</span>, model_name), <span class="st">"yes"</span>, <span class="st">"no"</span>),</span>
+<span id="cb5-67"><a href="#cb5-67" aria-hidden="true" tabindex="-1"></a>      <span class="at">n =</span> <span class="fu">nrow</span>(d), <span class="at">aic =</span> g<span class="sc">$</span>AIC, <span class="at">bic =</span> g<span class="sc">$</span>BIC, <span class="at">rsq =</span> <span class="cn">NA_real_</span>, <span class="at">adj_rsq =</span> <span class="cn">NA_real_</span>, <span class="at">rmse =</span> <span class="cn">NA_real_</span>,</span>
+<span id="cb5-68"><a href="#cb5-68" aria-hidden="true" tabindex="-1"></a>      <span class="at">pseudo_rsq =</span> <span class="dv">1</span> <span class="sc">-</span> <span class="fu">as.numeric</span>(<span class="fu">logLik</span>(fit) <span class="sc">/</span> <span class="fu">logLik</span>(null_fit)),</span>
+<span id="cb5-69"><a href="#cb5-69" aria-hidden="true" tabindex="-1"></a>      <span class="at">accuracy =</span> acc, <span class="at">sensitivity =</span> sens, <span class="at">specificity =</span> spec, <span class="at">auc =</span> auc_rank</span>
+<span id="cb5-70"><a href="#cb5-70" aria-hidden="true" tabindex="-1"></a>    ),</span>
+<span id="cb5-71"><a href="#cb5-71" aria-hidden="true" tabindex="-1"></a>    <span class="at">coefs =</span> <span class="fu">tidy</span>(fit) <span class="sc">%&gt;%</span> <span class="fu">mutate</span>(<span class="at">model_name =</span> model_name, <span class="at">model_type =</span> <span class="st">"logistic"</span>, <span class="at">odds_ratio =</span> <span class="fu">exp</span>(estimate)),</span>
+<span id="cb5-72"><a href="#cb5-72" aria-hidden="true" tabindex="-1"></a>    <span class="at">confusion =</span> <span class="fu">tibble</span>(<span class="at">model_name =</span> model_name, <span class="at">threshold =</span> thr<span class="sc">$</span>threshold, <span class="at">threshold_mode =</span> thr<span class="sc">$</span>mode, <span class="at">tp =</span> tp, <span class="at">tn =</span> tn, <span class="at">fp =</span> fp, <span class="at">fn =</span> fn),</span>
+<span id="cb5-73"><a href="#cb5-73" aria-hidden="true" tabindex="-1"></a>    <span class="at">threshold =</span> <span class="fu">tibble</span>(<span class="at">model_name =</span> model_name, <span class="at">threshold =</span> thr<span class="sc">$</span>threshold, <span class="at">threshold_mode =</span> thr<span class="sc">$</span>mode),</span>
+<span id="cb5-74"><a href="#cb5-74" aria-hidden="true" tabindex="-1"></a>    <span class="at">formula_text =</span> <span class="fu">paste</span>(<span class="fu">deparse</span>(fml), <span class="at">collapse =</span> <span class="st">""</span>)</span>
+<span id="cb5-75"><a href="#cb5-75" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb5-76"><a href="#cb5-76" aria-hidden="true" tabindex="-1"></a>}</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</section>
+<section id="fit-exactly-4-models" class="level2">
+<h2 class="anchored" data-anchor-id="fit-exactly-4-models">5) Fit Exactly 4 Models</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb6"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>df_model <span class="ot">&lt;-</span> df_imp <span class="sc">%&gt;%</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  <span class="fu">mutate</span>(<span class="at">lateness_binary_10 =</span> <span class="fu">if_else</span>(.data[[outcome_cont]] <span class="sc">&gt;</span> binary_cut, <span class="dv">1</span>L, <span class="dv">0</span>L, <span class="at">missing =</span> <span class="cn">NA_integer_</span>))</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>model_results <span class="ot">&lt;-</span> <span class="fu">list</span>(</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">baseline_linear_no_prior =</span> <span class="fu">fit_linear</span>(df_model, <span class="st">"baseline_linear_no_prior"</span>, outcome_cont, predictors_no_prior),</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">baseline_linear_with_prior =</span> <span class="fu">fit_linear</span>(df_model, <span class="st">"baseline_linear_with_prior"</span>, outcome_cont, predictors_with_prior),</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">logistic_no_prior =</span> <span class="fu">fit_logistic</span>(df_model, <span class="st">"logistic_no_prior"</span>, <span class="st">"lateness_binary_10"</span>, predictors_no_prior, <span class="at">manual_threshold =</span> manual_prob_threshold),</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">logistic_with_prior =</span> <span class="fu">fit_logistic</span>(df_model, <span class="st">"logistic_with_prior"</span>, <span class="st">"lateness_binary_10"</span>, predictors_with_prior, <span class="at">manual_threshold =</span> manual_prob_threshold)</span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+</div>
+</section>
+<section id="main-metrics-table" class="level2">
+<h2 class="anchored" data-anchor-id="main-metrics-table">6) Main Metrics Table</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb7"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>model_comparison_summary <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(<span class="fu">lapply</span>(model_results, <span class="st">`</span><span class="at">[[</span><span class="st">`</span>, <span class="st">"metrics"</span>)) <span class="sc">%&gt;%</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="fu">arrange</span>(model_type, prior_delay_included, model_name)</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>model_comparison_summary <span class="sc">%&gt;%</span> <span class="fu">kable</span>(<span class="at">digits =</span> <span class="dv">4</span>, <span class="at">caption =</span> <span class="st">"Main Metrics (4 Models)"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output-display">
+<table class="caption-top table table-sm table-striped small">
+<caption>Main Metrics (4 Models)</caption>
+<colgroup>
+<col style="width: 17%">
+<col style="width: 6%">
+<col style="width: 13%">
+<col style="width: 4%">
+<col style="width: 6%">
+<col style="width: 6%">
+<col style="width: 4%">
+<col style="width: 5%">
+<col style="width: 4%">
+<col style="width: 6%">
+<col style="width: 5%">
+<col style="width: 7%">
+<col style="width: 7%">
+<col style="width: 2%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">model_name</th>
+<th style="text-align: left;">model_type</th>
+<th style="text-align: left;">prior_delay_included</th>
+<th style="text-align: right;">n</th>
+<th style="text-align: right;">aic</th>
+<th style="text-align: right;">bic</th>
+<th style="text-align: right;">rsq</th>
+<th style="text-align: right;">adj_rsq</th>
+<th style="text-align: right;">rmse</th>
+<th style="text-align: right;">pseudo_rsq</th>
+<th style="text-align: right;">accuracy</th>
+<th style="text-align: right;">sensitivity</th>
+<th style="text-align: right;">specificity</th>
+<th style="text-align: right;">auc</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: left;">no</td>
+<td style="text-align: right;">596287</td>
+<td style="text-align: right;">3180679.37</td>
+<td style="text-align: right;">3181165.20</td>
+<td style="text-align: right;">0.2092</td>
+<td style="text-align: right;">0.2092</td>
+<td style="text-align: right;">3.4836</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: left;">yes</td>
+<td style="text-align: right;">592720</td>
+<td style="text-align: right;">2492252.78</td>
+<td style="text-align: right;">2492760.94</td>
+<td style="text-align: right;">0.7427</td>
+<td style="text-align: right;">0.7427</td>
+<td style="text-align: right;">1.9805</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: left;">no</td>
+<td style="text-align: right;">596287</td>
+<td style="text-align: right;">113087.73</td>
+<td style="text-align: right;">113562.26</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">0.1900</td>
+<td style="text-align: right;">0.7951</td>
+<td style="text-align: right;">0.7143</td>
+<td style="text-align: right;">0.7972</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: left;">yes</td>
+<td style="text-align: right;">592720</td>
+<td style="text-align: right;">36579.62</td>
+<td style="text-align: right;">37076.49</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">NA</td>
+<td style="text-align: right;">0.7351</td>
+<td style="text-align: right;">0.9653</td>
+<td style="text-align: right;">0.9328</td>
+<td style="text-align: right;">0.9662</td>
+<td style="text-align: right;">NA</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<section id="coefficient-table" class="level2">
+<h2 class="anchored" data-anchor-id="coefficient-table">7) Coefficient Table</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb8"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>model_coefficients_all <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(<span class="fu">lapply</span>(model_results, <span class="st">`</span><span class="at">[[</span><span class="st">`</span>, <span class="st">"coefs"</span>))</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>model_coefficients_all <span class="sc">%&gt;%</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  <span class="fu">group_by</span>(model_name) <span class="sc">%&gt;%</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>  <span class="fu">slice_head</span>(<span class="at">n =</span> <span class="dv">25</span>) <span class="sc">%&gt;%</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>  <span class="fu">ungroup</span>() <span class="sc">%&gt;%</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>  <span class="fu">kable</span>(<span class="at">digits =</span> <span class="dv">4</span>, <span class="at">caption =</span> <span class="st">"Coefficient Table (first 25 rows per model; full table saved)"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output-display">
+<table class="caption-top table table-sm table-striped small">
+<caption>Coefficient Table (first 25 rows per model; full table saved)</caption>
+<colgroup>
+<col style="width: 27%">
+<col style="width: 7%">
+<col style="width: 8%">
+<col style="width: 8%">
+<col style="width: 6%">
+<col style="width: 22%">
+<col style="width: 9%">
+<col style="width: 9%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">term</th>
+<th style="text-align: right;">estimate</th>
+<th style="text-align: right;">std.error</th>
+<th style="text-align: right;">statistic</th>
+<th style="text-align: right;">p.value</th>
+<th style="text-align: left;">model_name</th>
+<th style="text-align: left;">model_type</th>
+<th style="text-align: right;">odds_ratio</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">(Intercept)</td>
+<td style="text-align: right;">-0.7667</td>
+<td style="text-align: right;">0.0913</td>
+<td style="text-align: right;">-8.3992</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idER</td>
+<td style="text-align: right;">-0.3878</td>
+<td style="text-align: right;">0.0216</td>
+<td style="text-align: right;">-17.9506</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idGI</td>
+<td style="text-align: right;">-1.4256</td>
+<td style="text-align: right;">0.0934</td>
+<td style="text-align: right;">-15.2621</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idRR</td>
+<td style="text-align: right;">-2.9108</td>
+<td style="text-align: right;">0.2690</td>
+<td style="text-align: right;">-10.8196</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idRW</td>
+<td style="text-align: right;">1.7546</td>
+<td style="text-align: right;">0.0345</td>
+<td style="text-align: right;">50.8553</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idSB</td>
+<td style="text-align: right;">0.4487</td>
+<td style="text-align: right;">0.0212</td>
+<td style="text-align: right;">21.1327</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idSG</td>
+<td style="text-align: right;">-0.4323</td>
+<td style="text-align: right;">0.0304</td>
+<td style="text-align: right;">-14.2407</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idSV</td>
+<td style="text-align: right;">1.0880</td>
+<td style="text-align: right;">0.0163</td>
+<td style="text-align: right;">66.6057</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">directionSB</td>
+<td style="text-align: right;">-0.2499</td>
+<td style="text-align: right;">0.0093</td>
+<td style="text-align: right;">-26.7279</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">stop_sequence</td>
+<td style="text-align: right;">-0.0370</td>
+<td style="text-align: right;">0.0040</td>
+<td style="text-align: right;">-9.2242</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour</td>
+<td style="text-align: right;">-0.0869</td>
+<td style="text-align: right;">0.0052</td>
+<td style="text-align: right;">-16.5632</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group15_17</td>
+<td style="text-align: right;">0.6207</td>
+<td style="text-align: right;">0.0216</td>
+<td style="text-align: right;">28.6934</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group18_22</td>
+<td style="text-align: right;">0.9434</td>
+<td style="text-align: right;">0.0348</td>
+<td style="text-align: right;">27.1069</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group5_8</td>
+<td style="text-align: right;">-0.1082</td>
+<td style="text-align: right;">0.0350</td>
+<td style="text-align: right;">-3.0875</td>
+<td style="text-align: right;">0.0020</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group9_11</td>
+<td style="text-align: right;">-0.0727</td>
+<td style="text-align: right;">0.0220</td>
+<td style="text-align: right;">-3.2996</td>
+<td style="text-align: right;">0.0010</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonSPRING</td>
+<td style="text-align: right;">0.0084</td>
+<td style="text-align: right;">0.0180</td>
+<td style="text-align: right;">0.4661</td>
+<td style="text-align: right;">0.6411</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonSUMMER_1</td>
+<td style="text-align: right;">-0.3078</td>
+<td style="text-align: right;">0.0183</td>
+<td style="text-align: right;">-16.8279</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonSUMMER_2</td>
+<td style="text-align: right;">0.2120</td>
+<td style="text-align: right;">0.0195</td>
+<td style="text-align: right;">10.8943</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonWINTER</td>
+<td style="text-align: right;">0.1793</td>
+<td style="text-align: right;">0.0199</td>
+<td style="text-align: right;">9.0304</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_daytypeWEEKEND</td>
+<td style="text-align: right;">-0.2411</td>
+<td style="text-align: right;">0.0110</td>
+<td style="text-align: right;">-21.8809</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">vessel_trip_seq_in_chain</td>
+<td style="text-align: right;">0.0170</td>
+<td style="text-align: right;">0.0020</td>
+<td style="text-align: right;">8.6612</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">vessel_capacity</td>
+<td style="text-align: right;">-0.0009</td>
+<td style="text-align: right;">0.0001</td>
+<td style="text-align: right;">-6.6040</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">is_terminal_stopTRUE</td>
+<td style="text-align: right;">3.0593</td>
+<td style="text-align: right;">0.0144</td>
+<td style="text-align: right;">212.8982</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">0.3630</td>
+<td style="text-align: right;">0.0127</td>
+<td style="text-align: right;">28.6811</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">curr_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">-0.2768</td>
+<td style="text-align: right;">0.0126</td>
+<td style="text-align: right;">-21.9335</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_no_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">(Intercept)</td>
+<td style="text-align: right;">-0.6574</td>
+<td style="text-align: right;">0.0520</td>
+<td style="text-align: right;">-12.6304</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idER</td>
+<td style="text-align: right;">-0.3817</td>
+<td style="text-align: right;">0.0123</td>
+<td style="text-align: right;">-30.9998</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idGI</td>
+<td style="text-align: right;">-1.1649</td>
+<td style="text-align: right;">0.0531</td>
+<td style="text-align: right;">-21.9232</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idRR</td>
+<td style="text-align: right;">-1.7732</td>
+<td style="text-align: right;">0.1548</td>
+<td style="text-align: right;">-11.4539</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idRW</td>
+<td style="text-align: right;">1.4113</td>
+<td style="text-align: right;">0.0197</td>
+<td style="text-align: right;">71.7550</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idSB</td>
+<td style="text-align: right;">-0.0354</td>
+<td style="text-align: right;">0.0121</td>
+<td style="text-align: right;">-2.9230</td>
+<td style="text-align: right;">0.0035</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idSG</td>
+<td style="text-align: right;">-0.5111</td>
+<td style="text-align: right;">0.0173</td>
+<td style="text-align: right;">-29.5440</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idSV</td>
+<td style="text-align: right;">0.7145</td>
+<td style="text-align: right;">0.0093</td>
+<td style="text-align: right;">76.6955</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">directionSB</td>
+<td style="text-align: right;">-0.2037</td>
+<td style="text-align: right;">0.0053</td>
+<td style="text-align: right;">-38.1822</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">stop_sequence</td>
+<td style="text-align: right;">0.1472</td>
+<td style="text-align: right;">0.0023</td>
+<td style="text-align: right;">64.1736</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour</td>
+<td style="text-align: right;">-0.0439</td>
+<td style="text-align: right;">0.0030</td>
+<td style="text-align: right;">-14.6649</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group15_17</td>
+<td style="text-align: right;">0.3171</td>
+<td style="text-align: right;">0.0123</td>
+<td style="text-align: right;">25.6914</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group18_22</td>
+<td style="text-align: right;">0.2245</td>
+<td style="text-align: right;">0.0199</td>
+<td style="text-align: right;">11.3072</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group5_8</td>
+<td style="text-align: right;">-0.1997</td>
+<td style="text-align: right;">0.0200</td>
+<td style="text-align: right;">-9.9953</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group9_11</td>
+<td style="text-align: right;">-0.2449</td>
+<td style="text-align: right;">0.0126</td>
+<td style="text-align: right;">-19.4822</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonSPRING</td>
+<td style="text-align: right;">-0.0888</td>
+<td style="text-align: right;">0.0103</td>
+<td style="text-align: right;">-8.6558</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonSUMMER_1</td>
+<td style="text-align: right;">-0.0497</td>
+<td style="text-align: right;">0.0104</td>
+<td style="text-align: right;">-4.7642</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonSUMMER_2</td>
+<td style="text-align: right;">0.3268</td>
+<td style="text-align: right;">0.0111</td>
+<td style="text-align: right;">29.4323</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonWINTER</td>
+<td style="text-align: right;">-0.1848</td>
+<td style="text-align: right;">0.0113</td>
+<td style="text-align: right;">-16.3080</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_daytypeWEEKEND</td>
+<td style="text-align: right;">-0.2934</td>
+<td style="text-align: right;">0.0063</td>
+<td style="text-align: right;">-46.6844</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">vessel_trip_seq_in_chain</td>
+<td style="text-align: right;">-0.0244</td>
+<td style="text-align: right;">0.0011</td>
+<td style="text-align: right;">-21.7351</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">vessel_capacity</td>
+<td style="text-align: right;">-0.0022</td>
+<td style="text-align: right;">0.0001</td>
+<td style="text-align: right;">-29.7438</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">is_terminal_stopTRUE</td>
+<td style="text-align: right;">2.9059</td>
+<td style="text-align: right;">0.0082</td>
+<td style="text-align: right;">354.2993</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">0.4235</td>
+<td style="text-align: right;">0.0072</td>
+<td style="text-align: right;">58.6715</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">curr_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">-0.3585</td>
+<td style="text-align: right;">0.0072</td>
+<td style="text-align: right;">-49.7739</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">baseline_linear_with_prior</td>
+<td style="text-align: left;">linear</td>
+<td style="text-align: right;">NA</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">(Intercept)</td>
+<td style="text-align: right;">-7.9610</td>
+<td style="text-align: right;">0.1805</td>
+<td style="text-align: right;">-44.1170</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.0003</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idER</td>
+<td style="text-align: right;">-0.0182</td>
+<td style="text-align: right;">0.0416</td>
+<td style="text-align: right;">-0.4388</td>
+<td style="text-align: right;">0.6608</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9819</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idGI</td>
+<td style="text-align: right;">-1.9002</td>
+<td style="text-align: right;">0.2824</td>
+<td style="text-align: right;">-6.7291</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.1495</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idRR</td>
+<td style="text-align: right;">-0.9634</td>
+<td style="text-align: right;">0.4301</td>
+<td style="text-align: right;">-2.2401</td>
+<td style="text-align: right;">0.0251</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.3816</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idRW</td>
+<td style="text-align: right;">1.0448</td>
+<td style="text-align: right;">0.0574</td>
+<td style="text-align: right;">18.1859</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">2.8428</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idSB</td>
+<td style="text-align: right;">0.9371</td>
+<td style="text-align: right;">0.0377</td>
+<td style="text-align: right;">24.8677</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">2.5526</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idSG</td>
+<td style="text-align: right;">-0.3786</td>
+<td style="text-align: right;">0.0704</td>
+<td style="text-align: right;">-5.3810</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.6848</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idSV</td>
+<td style="text-align: right;">1.0574</td>
+<td style="text-align: right;">0.0306</td>
+<td style="text-align: right;">34.5812</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">2.8789</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">directionSB</td>
+<td style="text-align: right;">-0.0891</td>
+<td style="text-align: right;">0.0188</td>
+<td style="text-align: right;">-4.7491</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9147</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">stop_sequence</td>
+<td style="text-align: right;">-0.0579</td>
+<td style="text-align: right;">0.0087</td>
+<td style="text-align: right;">-6.6788</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9438</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour</td>
+<td style="text-align: right;">0.0009</td>
+<td style="text-align: right;">0.0099</td>
+<td style="text-align: right;">0.0945</td>
+<td style="text-align: right;">0.9247</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.0009</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group15_17</td>
+<td style="text-align: right;">0.5776</td>
+<td style="text-align: right;">0.0405</td>
+<td style="text-align: right;">14.2595</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.7817</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group18_22</td>
+<td style="text-align: right;">0.9018</td>
+<td style="text-align: right;">0.0649</td>
+<td style="text-align: right;">13.9043</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">2.4639</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group5_8</td>
+<td style="text-align: right;">-0.2840</td>
+<td style="text-align: right;">0.0749</td>
+<td style="text-align: right;">-3.7920</td>
+<td style="text-align: right;">0.0001</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.7528</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group9_11</td>
+<td style="text-align: right;">-0.0814</td>
+<td style="text-align: right;">0.0475</td>
+<td style="text-align: right;">-1.7118</td>
+<td style="text-align: right;">0.0869</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9218</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonSPRING</td>
+<td style="text-align: right;">0.0073</td>
+<td style="text-align: right;">0.0318</td>
+<td style="text-align: right;">0.2291</td>
+<td style="text-align: right;">0.8188</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.0073</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonSUMMER_1</td>
+<td style="text-align: right;">-0.4458</td>
+<td style="text-align: right;">0.0329</td>
+<td style="text-align: right;">-13.5455</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.6403</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonSUMMER_2</td>
+<td style="text-align: right;">-0.0460</td>
+<td style="text-align: right;">0.0321</td>
+<td style="text-align: right;">-1.4312</td>
+<td style="text-align: right;">0.1524</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9551</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonWINTER</td>
+<td style="text-align: right;">0.2136</td>
+<td style="text-align: right;">0.0388</td>
+<td style="text-align: right;">5.5055</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.2382</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_daytypeWEEKEND</td>
+<td style="text-align: right;">0.1684</td>
+<td style="text-align: right;">0.0201</td>
+<td style="text-align: right;">8.3996</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.1835</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">vessel_trip_seq_in_chain</td>
+<td style="text-align: right;">0.0215</td>
+<td style="text-align: right;">0.0033</td>
+<td style="text-align: right;">6.4742</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.0217</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">vessel_capacity</td>
+<td style="text-align: right;">0.0037</td>
+<td style="text-align: right;">0.0002</td>
+<td style="text-align: right;">16.1076</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.0038</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">is_terminal_stopTRUE</td>
+<td style="text-align: right;">1.0021</td>
+<td style="text-align: right;">0.0274</td>
+<td style="text-align: right;">36.5403</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">2.7241</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">0.1123</td>
+<td style="text-align: right;">0.0235</td>
+<td style="text-align: right;">4.7843</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.1188</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">curr_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">-0.0283</td>
+<td style="text-align: right;">0.0245</td>
+<td style="text-align: right;">-1.1554</td>
+<td style="text-align: right;">0.2479</td>
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9721</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">(Intercept)</td>
+<td style="text-align: right;">-8.4702</td>
+<td style="text-align: right;">0.3044</td>
+<td style="text-align: right;">-27.8275</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.0002</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idER</td>
+<td style="text-align: right;">-0.2998</td>
+<td style="text-align: right;">0.0703</td>
+<td style="text-align: right;">-4.2674</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.7410</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idGI</td>
+<td style="text-align: right;">-1.5432</td>
+<td style="text-align: right;">0.3520</td>
+<td style="text-align: right;">-4.3842</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.2137</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idRR</td>
+<td style="text-align: right;">-1.7027</td>
+<td style="text-align: right;">0.6585</td>
+<td style="text-align: right;">-2.5858</td>
+<td style="text-align: right;">0.0097</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.1822</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idRW</td>
+<td style="text-align: right;">0.6972</td>
+<td style="text-align: right;">0.0945</td>
+<td style="text-align: right;">7.3760</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">2.0081</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idSB</td>
+<td style="text-align: right;">0.4289</td>
+<td style="text-align: right;">0.0636</td>
+<td style="text-align: right;">6.7435</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.5356</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">route_idSG</td>
+<td style="text-align: right;">-0.4012</td>
+<td style="text-align: right;">0.1073</td>
+<td style="text-align: right;">-3.7404</td>
+<td style="text-align: right;">0.0002</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.6695</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">route_idSV</td>
+<td style="text-align: right;">0.8649</td>
+<td style="text-align: right;">0.0519</td>
+<td style="text-align: right;">16.6538</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">2.3749</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">directionSB</td>
+<td style="text-align: right;">-0.0606</td>
+<td style="text-align: right;">0.0313</td>
+<td style="text-align: right;">-1.9378</td>
+<td style="text-align: right;">0.0526</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9412</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">stop_sequence</td>
+<td style="text-align: right;">-0.0324</td>
+<td style="text-align: right;">0.0145</td>
+<td style="text-align: right;">-2.2374</td>
+<td style="text-align: right;">0.0253</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9681</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour</td>
+<td style="text-align: right;">-0.0042</td>
+<td style="text-align: right;">0.0170</td>
+<td style="text-align: right;">-0.2449</td>
+<td style="text-align: right;">0.8065</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9958</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group15_17</td>
+<td style="text-align: right;">0.2726</td>
+<td style="text-align: right;">0.0667</td>
+<td style="text-align: right;">4.0876</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.3134</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group18_22</td>
+<td style="text-align: right;">0.1700</td>
+<td style="text-align: right;">0.1088</td>
+<td style="text-align: right;">1.5625</td>
+<td style="text-align: right;">0.1182</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.1853</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_sched_hour_group5_8</td>
+<td style="text-align: right;">-0.2613</td>
+<td style="text-align: right;">0.1213</td>
+<td style="text-align: right;">-2.1545</td>
+<td style="text-align: right;">0.0312</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.7700</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">prev_stop_sched_hour_group9_11</td>
+<td style="text-align: right;">-0.1702</td>
+<td style="text-align: right;">0.0801</td>
+<td style="text-align: right;">-2.1260</td>
+<td style="text-align: right;">0.0335</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.8435</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonSPRING</td>
+<td style="text-align: right;">-0.2406</td>
+<td style="text-align: right;">0.0540</td>
+<td style="text-align: right;">-4.4589</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.7861</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonSUMMER_1</td>
+<td style="text-align: right;">-0.1469</td>
+<td style="text-align: right;">0.0550</td>
+<td style="text-align: right;">-2.6692</td>
+<td style="text-align: right;">0.0076</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.8634</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_seasonSUMMER_2</td>
+<td style="text-align: right;">0.3064</td>
+<td style="text-align: right;">0.0544</td>
+<td style="text-align: right;">5.6283</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.3585</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">schedule_seasonWINTER</td>
+<td style="text-align: right;">-0.3424</td>
+<td style="text-align: right;">0.0677</td>
+<td style="text-align: right;">-5.0568</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.7100</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">schedule_daytypeWEEKEND</td>
+<td style="text-align: right;">-0.1327</td>
+<td style="text-align: right;">0.0342</td>
+<td style="text-align: right;">-3.8785</td>
+<td style="text-align: right;">0.0001</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.8757</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">vessel_trip_seq_in_chain</td>
+<td style="text-align: right;">-0.0346</td>
+<td style="text-align: right;">0.0059</td>
+<td style="text-align: right;">-5.8858</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9660</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">vessel_capacity</td>
+<td style="text-align: right;">-0.0001</td>
+<td style="text-align: right;">0.0004</td>
+<td style="text-align: right;">-0.1800</td>
+<td style="text-align: right;">0.8571</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.9999</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">is_terminal_stopTRUE</td>
+<td style="text-align: right;">2.3430</td>
+<td style="text-align: right;">0.0487</td>
+<td style="text-align: right;">48.1482</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">10.4129</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">prev_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">0.5164</td>
+<td style="text-align: right;">0.0402</td>
+<td style="text-align: right;">12.8480</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">1.6761</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">curr_stop_shared_stop_flagTRUE</td>
+<td style="text-align: right;">-0.2398</td>
+<td style="text-align: right;">0.0421</td>
+<td style="text-align: right;">-5.6968</td>
+<td style="text-align: right;">0.0000</td>
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: left;">logistic</td>
+<td style="text-align: right;">0.7868</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<section id="logistic-confusion-tables-and-chosen-thresholds" class="level2">
+<h2 class="anchored" data-anchor-id="logistic-confusion-tables-and-chosen-thresholds">8) Logistic Confusion Tables and Chosen Thresholds</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb9"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a>logistic_confusion_tables <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  model_results<span class="sc">$</span>logistic_no_prior<span class="sc">$</span>confusion,</span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  model_results<span class="sc">$</span>logistic_with_prior<span class="sc">$</span>confusion</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>logistic_threshold_summary <span class="ot">&lt;-</span> <span class="fu">bind_rows</span>(</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>  model_results<span class="sc">$</span>logistic_no_prior<span class="sc">$</span>threshold,</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>  model_results<span class="sc">$</span>logistic_with_prior<span class="sc">$</span>threshold</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>logistic_threshold_summary <span class="sc">%&gt;%</span> <span class="fu">kable</span>(<span class="at">digits =</span> <span class="dv">4</span>, <span class="at">caption =</span> <span class="st">"Chosen Logistic Thresholds"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output-display">
+<table class="caption-top table table-sm table-striped small">
+<caption>Chosen Logistic Thresholds</caption>
+<thead>
+<tr class="header">
+<th style="text-align: left;">model_name</th>
+<th style="text-align: right;">threshold</th>
+<th style="text-align: left;">threshold_mode</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: right;">0.03</td>
+<td style="text-align: left;">youden_j_auto</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: right;">0.04</td>
+<td style="text-align: left;">youden_j_auto</td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb10"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>logistic_confusion_tables <span class="sc">%&gt;%</span> <span class="fu">kable</span>(<span class="at">caption =</span> <span class="st">"Logistic Confusion Tables"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output-display">
+<table class="caption-top table table-sm table-striped small">
+<caption>Logistic Confusion Tables</caption>
+<colgroup>
+<col style="width: 28%">
+<col style="width: 14%">
+<col style="width: 21%">
+<col style="width: 8%">
+<col style="width: 10%">
+<col style="width: 10%">
+<col style="width: 7%">
+</colgroup>
+<thead>
+<tr class="header">
+<th style="text-align: left;">model_name</th>
+<th style="text-align: right;">threshold</th>
+<th style="text-align: left;">threshold_mode</th>
+<th style="text-align: right;">tp</th>
+<th style="text-align: right;">tn</th>
+<th style="text-align: right;">fp</th>
+<th style="text-align: right;">fn</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">logistic_no_prior</td>
+<td style="text-align: right;">0.03</td>
+<td style="text-align: left;">youden_j_auto</td>
+<td style="text-align: right;">10657</td>
+<td style="text-align: right;">463479</td>
+<td style="text-align: right;">117889</td>
+<td style="text-align: right;">4262</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">logistic_with_prior</td>
+<td style="text-align: right;">0.04</td>
+<td style="text-align: left;">youden_j_auto</td>
+<td style="text-align: right;">13718</td>
+<td style="text-align: right;">558456</td>
+<td style="text-align: right;">19558</td>
+<td style="text-align: right;">988</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+<section id="save-outputs" class="level2">
+<h2 class="anchored" data-anchor-id="save-outputs">9) Save Outputs</h2>
+<div class="cell">
+<div class="code-copy-outer-scaffold"><div class="sourceCode cell-code" id="cb11"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="fu">write_csv</span>(model_comparison_summary, <span class="fu">file.path</span>(output_dir, <span class="st">"model_comparison_summary.csv"</span>))</span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="fu">write_csv</span>(model_coefficients_all, <span class="fu">file.path</span>(output_dir, <span class="st">"model_coefficients_all.csv"</span>))</span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="fu">write_csv</span>(logistic_confusion_tables, <span class="fu">file.path</span>(output_dir, <span class="st">"logistic_confusion_tables.csv"</span>))</span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a><span class="fu">write_csv</span>(logistic_threshold_summary, <span class="fu">file.path</span>(output_dir, <span class="st">"logistic_threshold_summary.csv"</span>))</span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a><span class="fu">write_csv</span>(imputation_summary, <span class="fu">file.path</span>(output_dir, <span class="st">"ais_env_imputation_summary.csv"</span>))</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="fu">tibble</span>(</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">file =</span> <span class="fu">c</span>(</span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>    <span class="st">"model_comparison_summary.csv"</span>,</span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a>    <span class="st">"model_coefficients_all.csv"</span>,</span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>    <span class="st">"logistic_confusion_tables.csv"</span>,</span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>    <span class="st">"logistic_threshold_summary.csv"</span>,</span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>    <span class="st">"ais_env_imputation_summary.csv"</span></span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a>  )</span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>) <span class="sc">%&gt;%</span> <span class="fu">kable</span>(<span class="at">caption =</span> <span class="st">"Saved Outputs"</span>)</span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<div class="cell-output-display">
+<table class="caption-top table table-sm table-striped small">
+<caption>Saved Outputs</caption>
+<thead>
+<tr class="header">
+<th style="text-align: left;">file</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td style="text-align: left;">model_comparison_summary.csv</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">model_coefficients_all.csv</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">logistic_confusion_tables.csv</td>
+</tr>
+<tr class="even">
+<td style="text-align: left;">logistic_threshold_summary.csv</td>
+</tr>
+<tr class="odd">
+<td style="text-align: left;">ais_env_imputation_summary.csv</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+      const outerScaffold = trigger.parentElement.cloneNode(true);
+      const codeEl = outerScaffold.querySelector('code');
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

@@ -1,0 +1,325 @@
+---
+title: "Associative Baseline Models (Simplified)"
+output: html_document
+author: "Project Team"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+options(scipen = 999, dplyr.summarise.inform = FALSE)
+```
+
+```{r packages}
+required_pkgs <- c("dplyr", "tidyr", "arrow", "broom", "knitr", "readr")
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_pkgs) > 0) stop("Missing packages: ", paste(missing_pkgs, collapse = ", "))
+
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(broom)
+library(knitr)
+library(readr)
+```
+
+## 1) Purpose and Setup
+
+This is an in-sample associative modeling report (no train/test/CV framing), with exactly 4 models:
+
+1. `baseline_linear_no_prior`
+2. `baseline_linear_with_prior`
+3. `logistic_no_prior`
+4. `logistic_with_prior`
+
+```{r settings}
+set.seed(7900)
+
+input_parquet <- "C:/Data/Spring 2026/CPLN 7900/explore/outputs/direct_pipeline_final_20260327/baseline_modeling_table_final_direct.parquet"
+output_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/outputs/direct_pipeline_final_20260327/associative_baseline_models_20260328"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+outcome_cont <- "lateness_vs_original_schedule_min"
+binary_cut <- 10
+
+# Logistic threshold system:
+# - set manual_prob_threshold to a numeric value to force manual threshold.
+# - keep NA to use automatic Youden-J threshold selection.
+manual_prob_threshold <- NA_real_
+
+# Weekly local-time-slot imputation:
+# interpreted as a 7-day centered window (±3 days) by local trip date.
+week_window_days <- 3
+
+base_predictors <- c(
+  "route_id", "direction", "stop_sequence", "prev_stop_sched_hour", "prev_stop_sched_hour_group",
+  "schedule_season", "schedule_daytype", "vessel_trip_seq_in_chain", "vessel_capacity",
+  "is_terminal_stop", "prev_stop_shared_stop_flag", "curr_stop_shared_stop_flag",
+  "planned_turnaround_gap_min", "scheduled_headway_min", "expected_water_min",
+  "prev_stop_sequence", "prev_stop_boardings", "prev_stop_alightings", "prev_stop_onboard",
+  "prev_stop_load_factor", "env_temperature_c", "env_wind_speed_mps", "env_visibility_m",
+  "env_precipitation_mm", "env_battery_water_level_anomaly", "env_narrows_current_residual",
+  "env_battery_water_level_obs", "env_narrows_current_obs",
+  "prev_stop_hourly_vessel_count_all", "curr_stop_hourly_vessel_count_all"
+)
+prior_delay_predictors <- c("inherited_prev_trip_delay", "carried_within_trip_delay")
+```
+
+## 2) Data Loading and Variable Setup
+
+```{r load}
+if (!file.exists(input_parquet)) stop("Missing input parquet: ", input_parquet)
+df_raw <- read_parquet(input_parquet) %>% as_tibble()
+
+df <- df_raw %>%
+  mutate(
+    trip_date = as.Date(substr(as.character(trip_key), 1, 8), format = "%Y%m%d")
+  )
+
+predictors_no_prior <- intersect(base_predictors, names(df))
+predictors_with_prior <- unique(c(predictors_no_prior, intersect(prior_delay_predictors, names(df))))
+
+tibble(
+  input_rows = nrow(df_raw),
+  rows_after_load = nrow(df),
+  predictors_no_prior_n = length(predictors_no_prior),
+  predictors_with_prior_n = length(predictors_with_prior)
+) %>% kable(caption = "Data and Predictor Setup")
+```
+
+## 3) AIS/Environment Missing-Value Imputation Rule
+
+```{r impute}
+build_week_fill_map <- function(day_slot_tbl, group_col, date_col = "trip_date", value_col = "slot_day_median", window_days = 3) {
+  if (nrow(day_slot_tbl) == 0) return(tibble())
+  split_tbl <- split(day_slot_tbl, day_slot_tbl[[group_col]], drop = TRUE)
+  out <- lapply(split_tbl, function(gdf) {
+    gdf <- gdf[order(gdf[[date_col]]), , drop = FALSE]
+    d <- gdf[[date_col]]
+    v <- gdf[[value_col]]
+    week_fill <- vapply(seq_along(v), function(i) {
+      idx <- abs(as.integer(d - d[i])) <= window_days
+      val <- suppressWarnings(median(v[idx], na.rm = TRUE))
+      ifelse(is.finite(val), val, NA_real_)
+    }, numeric(1))
+    gdf$week_fill <- week_fill
+    gdf[, c(group_col, date_col, "week_fill"), drop = FALSE]
+  })
+  bind_rows(out)
+}
+
+impute_by_local_slot_week <- function(data, var_name, window_days = 3) {
+  x <- data
+  miss_before <- sum(is.na(x[[var_name]]))
+  if (miss_before == 0) {
+    return(list(data = x, summary = tibble(variable = var_name, n_missing_before = 0L, n_filled_primary = 0L, n_filled_fallback = 0L, n_missing_after = 0L)))
+  }
+
+  # Primary: same local hour within centered 7-day window (±3 days by default).
+  primary_daily <- x %>%
+    filter(!is.na(.data[[var_name]]), !is.na(trip_date), !is.na(prev_stop_sched_hour)) %>%
+    group_by(prev_stop_sched_hour, trip_date) %>%
+    summarise(slot_day_median = median(.data[[var_name]], na.rm = TRUE), .groups = "drop")
+  primary_fill <- build_week_fill_map(primary_daily, group_col = "prev_stop_sched_hour", value_col = "slot_day_median", window_days = window_days) %>%
+    rename(fill_primary = week_fill)
+
+  # Fallback: same local hour-group within centered 7-day window.
+  fallback_daily <- x %>%
+    filter(!is.na(.data[[var_name]]), !is.na(trip_date), !is.na(prev_stop_sched_hour_group)) %>%
+    group_by(prev_stop_sched_hour_group, trip_date) %>%
+    summarise(slot_day_median = median(.data[[var_name]], na.rm = TRUE), .groups = "drop")
+  fallback_fill <- build_week_fill_map(fallback_daily, group_col = "prev_stop_sched_hour_group", value_col = "slot_day_median", window_days = window_days) %>%
+    rename(fill_fallback = week_fill)
+
+  x <- x %>%
+    left_join(primary_fill, by = c("prev_stop_sched_hour", "trip_date")) %>%
+    left_join(fallback_fill, by = c("prev_stop_sched_hour_group", "trip_date"))
+
+  was_missing <- is.na(x[[var_name]])
+  fill_primary_idx <- was_missing & !is.na(x$fill_primary)
+  fill_fallback_idx <- was_missing & is.na(x$fill_primary) & !is.na(x$fill_fallback)
+
+  x[[var_name]][fill_primary_idx] <- x$fill_primary[fill_primary_idx]
+  x[[var_name]][fill_fallback_idx] <- x$fill_fallback[fill_fallback_idx]
+  x <- x %>% select(-fill_primary, -fill_fallback)
+
+  list(
+    data = x,
+    summary = tibble(
+      variable = var_name,
+      n_missing_before = miss_before,
+      n_filled_primary = sum(fill_primary_idx, na.rm = TRUE),
+      n_filled_fallback = sum(fill_fallback_idx, na.rm = TRUE),
+      n_missing_after = sum(is.na(x[[var_name]]))
+    )
+  )
+}
+
+impute_vars <- intersect(
+  c(
+    names(df)[grepl("^env_", names(df))],
+    "prev_stop_hourly_vessel_count_all",
+    "curr_stop_hourly_vessel_count_all"
+  ),
+  names(df)
+)
+
+impute_summary_list <- list()
+df_imp <- df
+for (v in impute_vars) {
+  res <- impute_by_local_slot_week(df_imp, v, window_days = week_window_days)
+  df_imp <- res$data
+  impute_summary_list[[length(impute_summary_list) + 1]] <- res$summary
+}
+imputation_summary <- bind_rows(impute_summary_list)
+imputation_summary %>% kable(caption = "AIS/Environment Imputation Summary")
+```
+
+## 4) Helper Functions
+
+```{r helpers}
+prepare_model_df <- function(data, outcome, predictors) {
+  data %>% select(all_of(c(outcome, predictors))) %>% drop_na()
+}
+
+choose_logistic_threshold <- function(y, p, manual_threshold = NA_real_) {
+  if (!is.na(manual_threshold)) {
+    return(list(threshold = manual_threshold, mode = "manual"))
+  }
+  thresholds <- seq(0.01, 0.99, by = 0.01)
+  j_tbl <- lapply(thresholds, function(t) {
+    pred <- ifelse(p >= t, 1L, 0L)
+    tp <- sum(pred == 1L & y == 1L); tn <- sum(pred == 0L & y == 0L)
+    fp <- sum(pred == 1L & y == 0L); fn <- sum(pred == 0L & y == 1L)
+    sens <- ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_)
+    spec <- ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_)
+    tibble(threshold = t, sensitivity = sens, specificity = spec, youden_j = sens + spec - 1)
+  }) %>% bind_rows() %>% filter(!is.na(youden_j))
+  best <- j_tbl %>% arrange(desc(youden_j), abs(threshold - 0.5)) %>% slice(1)
+  list(threshold = best$threshold[[1]], mode = "youden_j_auto")
+}
+
+fit_linear <- function(data, model_name, outcome, predictors) {
+  d <- prepare_model_df(data, outcome, predictors)
+  fml <- as.formula(paste(outcome, "~", paste(predictors, collapse = " + ")))
+  fit <- lm(fml, data = d)
+  pred <- predict(fit, newdata = d)
+  rmse <- sqrt(mean((d[[outcome]] - pred)^2))
+  g <- glance(fit)
+  list(
+    metrics = tibble(
+      model_name = model_name, model_type = "linear", prior_delay_included = ifelse(grepl("with_prior", model_name), "yes", "no"),
+      n = nrow(d), aic = g$AIC, bic = g$BIC, rsq = g$r.squared, adj_rsq = g$adj.r.squared, rmse = rmse,
+      pseudo_rsq = NA_real_, accuracy = NA_real_, sensitivity = NA_real_, specificity = NA_real_, auc = NA_real_
+    ),
+    coefs = tidy(fit) %>% mutate(model_name = model_name, model_type = "linear"),
+    formula_text = paste(deparse(fml), collapse = "")
+  )
+}
+
+fit_logistic <- function(data, model_name, outcome_binary, predictors, manual_threshold = NA_real_) {
+  d <- prepare_model_df(data, outcome_binary, predictors)
+  fml <- as.formula(paste(outcome_binary, "~", paste(predictors, collapse = " + ")))
+  fit <- glm(fml, data = d, family = binomial())
+  p <- as.numeric(predict(fit, newdata = d, type = "response"))
+  y <- as.integer(d[[outcome_binary]])
+
+  thr <- choose_logistic_threshold(y, p, manual_threshold = manual_threshold)
+  pred <- ifelse(p >= thr$threshold, 1L, 0L)
+
+  tp <- sum(pred == 1L & y == 1L); tn <- sum(pred == 0L & y == 0L)
+  fp <- sum(pred == 1L & y == 0L); fn <- sum(pred == 0L & y == 1L)
+  sens <- ifelse((tp + fn) > 0, tp / (tp + fn), NA_real_)
+  spec <- ifelse((tn + fp) > 0, tn / (tn + fp), NA_real_)
+  acc <- (tp + tn) / nrow(d)
+  null_fit <- glm(as.formula(paste(outcome_binary, "~ 1")), data = d, family = binomial())
+
+  n_pos <- sum(y == 1L); n_neg <- sum(y == 0L)
+  auc_rank <- if (n_pos == 0 || n_neg == 0) NA_real_ else {
+    r <- rank(p, ties.method = "average")
+    (sum(r[y == 1L]) - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+  }
+
+  g <- glance(fit)
+  list(
+    metrics = tibble(
+      model_name = model_name, model_type = "logistic", prior_delay_included = ifelse(grepl("with_prior", model_name), "yes", "no"),
+      n = nrow(d), aic = g$AIC, bic = g$BIC, rsq = NA_real_, adj_rsq = NA_real_, rmse = NA_real_,
+      pseudo_rsq = 1 - as.numeric(logLik(fit) / logLik(null_fit)),
+      accuracy = acc, sensitivity = sens, specificity = spec, auc = auc_rank
+    ),
+    coefs = tidy(fit) %>% mutate(model_name = model_name, model_type = "logistic", odds_ratio = exp(estimate)),
+    confusion = tibble(model_name = model_name, threshold = thr$threshold, threshold_mode = thr$mode, tp = tp, tn = tn, fp = fp, fn = fn),
+    threshold = tibble(model_name = model_name, threshold = thr$threshold, threshold_mode = thr$mode),
+    formula_text = paste(deparse(fml), collapse = "")
+  )
+}
+```
+
+## 5) Fit Exactly 4 Models
+
+```{r fit}
+df_model <- df_imp %>%
+  mutate(lateness_binary_10 = if_else(.data[[outcome_cont]] > binary_cut, 1L, 0L, missing = NA_integer_))
+
+model_results <- list(
+  baseline_linear_no_prior = fit_linear(df_model, "baseline_linear_no_prior", outcome_cont, predictors_no_prior),
+  baseline_linear_with_prior = fit_linear(df_model, "baseline_linear_with_prior", outcome_cont, predictors_with_prior),
+  logistic_no_prior = fit_logistic(df_model, "logistic_no_prior", "lateness_binary_10", predictors_no_prior, manual_threshold = manual_prob_threshold),
+  logistic_with_prior = fit_logistic(df_model, "logistic_with_prior", "lateness_binary_10", predictors_with_prior, manual_threshold = manual_prob_threshold)
+)
+```
+
+## 6) Main Metrics Table
+
+```{r metrics}
+model_comparison_summary <- bind_rows(lapply(model_results, `[[`, "metrics")) %>%
+  arrange(model_type, prior_delay_included, model_name)
+model_comparison_summary %>% kable(digits = 4, caption = "Main Metrics (4 Models)")
+```
+
+## 7) Coefficient Table
+
+```{r coefs}
+model_coefficients_all <- bind_rows(lapply(model_results, `[[`, "coefs"))
+model_coefficients_all %>%
+  group_by(model_name) %>%
+  slice_head(n = 25) %>%
+  ungroup() %>%
+  kable(digits = 4, caption = "Coefficient Table (first 25 rows per model; full table saved)")
+```
+
+## 8) Logistic Confusion Tables and Chosen Thresholds
+
+```{r logistic-tables}
+logistic_confusion_tables <- bind_rows(
+  model_results$logistic_no_prior$confusion,
+  model_results$logistic_with_prior$confusion
+)
+logistic_threshold_summary <- bind_rows(
+  model_results$logistic_no_prior$threshold,
+  model_results$logistic_with_prior$threshold
+)
+
+logistic_threshold_summary %>% kable(digits = 4, caption = "Chosen Logistic Thresholds")
+logistic_confusion_tables %>% kable(caption = "Logistic Confusion Tables")
+```
+
+## 9) Save Outputs
+
+```{r save}
+write_csv(model_comparison_summary, file.path(output_dir, "model_comparison_summary.csv"))
+write_csv(model_coefficients_all, file.path(output_dir, "model_coefficients_all.csv"))
+write_csv(logistic_confusion_tables, file.path(output_dir, "logistic_confusion_tables.csv"))
+write_csv(logistic_threshold_summary, file.path(output_dir, "logistic_threshold_summary.csv"))
+write_csv(imputation_summary, file.path(output_dir, "ais_env_imputation_summary.csv"))
+
+tibble(
+  file = c(
+    "model_comparison_summary.csv",
+    "model_coefficients_all.csv",
+    "logistic_confusion_tables.csv",
+    "logistic_threshold_summary.csv",
+    "ais_env_imputation_summary.csv"
+  )
+) %>% kable(caption = "Saved Outputs")
+```
