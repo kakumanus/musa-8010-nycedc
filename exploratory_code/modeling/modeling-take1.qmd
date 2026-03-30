@@ -2,6 +2,7 @@
 title: "Modeling - Take 1"
 format: html
 author: Sujan Kakumanu
+code-fold: show
 ---
 
 ```{r setup}
@@ -15,7 +16,6 @@ p_load(tidyverse, sf, viridis, lubridate)
 ```
 
 ```{r setup-2}
-#| eval: false
 baseline <- read.csv("../ridership_eda/baseline_model_stop_trip.csv")
 ```
 
@@ -213,3 +213,9 @@ val_predictions %>%
 **By season and day type** — The holdout covers only SUMMER_1 given the June 2025 test window. Weekends show slightly higher RMSE than weekdays, consistent with leisure travel adding unpredictability. Bias is small across all groups.
 
 **NEXT STEPS** — GI underprediction points to factors not yet captured. AIS traffic features and weather/tide data could be areas of improvement, particularly for RW and GI.
+
+```{r}
+lm_val_fit %>%
+  extract_fit_parsnip() %>%
+  tidy()
+```
