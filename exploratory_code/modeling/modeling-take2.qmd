@@ -193,7 +193,7 @@ model_rec <- recipe(is_severely_late ~ ., data = train_data) %>%
   step_dummy(all_nominal_predictors()) %>%
   step_zv(all_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  themis::step_downsample(is_severely_late, under_ratio = 3, seed = 614) #NOTE: Adjust under_ratio here. 1 = 50/50. 10 is 10:1 severe:non-severe
+  themis::step_downsample(is_severely_late, under_ratio = 10, seed = 614) #NOTE: Adjust under_ratio here. 1 = 50/50. 10 is 10:1 severe:non-severe
 ```
 
 ## Model Specification and Workflow
@@ -222,6 +222,49 @@ logistic_tuned <- fit_resamples(
 collect_metrics(logistic_tuned)
 ```
 
+## Threshold Tuning
+
+Given that false positives are operationally costly, we prioritize precision over
+recall. 
+Rather than using the default 0.5 classification threshold, we evaluate
+precision and recall across a range of thresholds using CV predictions.
+
+TODO: Is this a good approach?
+
+```{r threshold-tuning}
+p_load(probably)
+
+# Extract CV predictions
+cv_predictions <- collect_predictions(logistic_tuned)
+
+# Evaluate across thresholds
+threshold_data <- cv_predictions %>%
+  threshold_perf(
+    truth      = is_severely_late,
+    estimate   = .pred_yes,
+    thresholds = seq(0.05, 0.95, by = 0.05),
+    event_level = "first"
+  )
+
+# Plot precision and recall across thresholds
+threshold_data %>%
+  filter(.metric %in% c("sensitivity", "specificity")) %>%
+  ggplot(aes(x = .threshold, y = .estimate, color = .metric)) +
+  geom_line() +
+  geom_point(size = 1.5) +
+  labs(
+    title = "Sensitivity and Specificity Across Classification Thresholds",
+    subtitle = "Higher threshold = fewer but more reliable alerts",
+    x = "Threshold",
+    y = "Estimate",
+    color = "Metric"
+  ) +
+  scale_color_viridis_d(option = "turbo") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+
 ## Validate on Test Set
 ```{r validate}
 model_rec_final <- recipe(is_severely_late ~ ., data = train_data %>% select(-cv_month)) %>%
@@ -230,7 +273,7 @@ model_rec_final <- recipe(is_severely_late ~ ., data = train_data %>% select(-cv
   step_dummy(all_nominal_predictors()) %>%
   step_zv(all_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  themis::step_downsample(is_severely_late, under_ratio = 1, seed = 717) # CHANGE UNDER_RATIO HERE FOR VALIDATION AS WELL
+  themis::step_downsample(is_severely_late, under_ratio = 10, seed = 717) # CHANGE UNDER_RATIO HERE FOR VALIDATION AS WELL
 
 logistic_wf_final <- workflow() %>%
   add_recipe(model_rec_final) %>%
