@@ -103,7 +103,7 @@ trip2 <- trip %>%
 ```{r p-route}
 route_order <- trip2 %>%
   group_by(route_no) %>%
-  summarise(mean_delay = mean(delay_5, na.rm = TRUE), .groups = "drop") %>%
+  summarise(mean_delay = mean(delay_10, na.rm = TRUE), .groups = "drop") %>%
   arrange(mean_delay) %>%
   pull(route_no)
 
@@ -112,15 +112,15 @@ trip2 <- trip2 %>%
 
 trip2 %>%
   group_by(route_no, day_type) %>%
-  summarise(delay_rate = mean(delay_5, na.rm = TRUE), .groups = "drop") %>%
+  summarise(delay_rate = mean(delay_10, na.rm = TRUE), .groups = "drop") %>%
   ggplot(aes(x = route_no, y = delay_rate, fill = day_type)) +
   geom_col(position = position_dodge(width = 0.8), width = 0.7, alpha = 0.9) +
   coord_flip() +
   scale_y_continuous(labels = scales::percent_format()) +
-  scale_fill_manual(values = c("Weekday" = "#F8766D", "Weekend" = "#00BFC4")) +
+  scale_fill_manual(values = c("Weekday" = "#EB5600", "Weekend" = "#1A9988")) +
   theme_gray() +
   labs(
-    title = "Delay Rate (>5 min) by Route",
+    title = "Delay Rate (>10 min) by Route",
     subtitle = "Weekday vs Weekend",
     x = NULL,
     y = "Share of trips delayed",
@@ -136,14 +136,15 @@ This suggests capacity or demand-driven congestion on leisure-heavy routes.”
 ```{r p-month}
 trip2 %>%
   group_by(month, day_type) %>%
-  summarise(delay_rate = mean(delay_5, na.rm=TRUE), .groups="drop") %>%
+  summarise(delay_rate = mean(delay_10, na.rm=TRUE), .groups="drop") %>%
   ggplot(aes(x=month, y=delay_rate, color=day_type)) +
+  scale_color_manual(values = c("Weekday" = "#EB5600", "Weekend" = "#1A9988")) +
   geom_line(size=1) +
   geom_point() +
   scale_y_continuous(labels=scales::percent_format()) +
   scale_x_date(date_breaks="1 month", date_labels="%Y-%m") +
   labs(
-    title="Delay Rate (>5 min) by Month",
+    title="Delay Rate (>10 min) by Month",
     x=NULL,
     y="Share delayed",
     color=NULL
