@@ -1,0 +1,397 @@
+---
+title: "Modeling - Take 2"
+format: html
+author: Sujan Kakumanu
+code-fold: show
+---
+```{r setup}
+#| message: false
+#| warning: false
+options(scipen = 999)
+if(!require(pacman)){install.packages("pacman"); library(pacman, quietly = T)}
+p_load(tidyverse, sf, viridis, lubridate, tidymodels, themis)
+```
+
+## Overview
+
+This document builds a predictive model for severe ferry delays, defined as arrivals
+more than 10 minutes late. The model is designed to generate forecasts 48 hours in
+advance, meaning all features must be knowable before the day of operation. Features
+derived from same-day observations — such as actual boardings or real-time schedule
+adherence — are explicitly excluded.
+
+The outcome variable is binary: `is_severely_late` (1 if `arr_late_min > 10`, 0
+otherwise). Given that severe delays represent only 2.2% of trips, we address class
+imbalance via downsampling and evaluate performance using ROC AUC, precision, recall,
+and F1 rather than accuracy.
+
+## Data Loading
+```{r load-data}
+baseline <- read.csv("../ridership_eda/baseline_model_stop_trip.csv")
+
+historical_averages <- read.csv("../ais-eda/AIS_historical_averages.csv") %>%
+  mutate(
+    stop_id     = as.character(stop_id),
+    day_of_week = as.character(day_of_week)
+  )
+```
+
+## Data Cleaning
+
+```{r clean-data}
+model_data <- baseline %>%
+  mutate(
+    date      = as.Date(str_extract(trip_key, "^\\d{4}-\\d{2}-\\d{2}")),
+    trip_id   = str_extract(trip_key, "(?<=\\|)\\d+(?=\\|)"),
+    route     = str_extract(trip_key, "(?<=\\|)[A-Z]+(?=\\|)"),
+    direction = str_extract(trip_key, "[A-Z]+$")
+  ) %>%
+  filter(model_eligible == "True") %>%
+  filter(!is.na(arr_late_min)) %>%
+  mutate(
+    stop_id     = as.character(as.integer(str_extract(segment_key, "\\d+$"))),
+    day_of_week = as.character(wday(date, label = TRUE))
+  ) %>%
+  left_join(
+    historical_averages,
+    by = c("stop_id", "dep_hour" = "hour",
+           "schedule_season", "schedule_daytype"),
+    relationship = "many-to-many"
+  ) %>%
+  filter(day_of_week.x == day_of_week.y) %>%
+  select(-day_of_week.y) %>%
+  rename(day_of_week = day_of_week.x) %>%
+  mutate(is_severely_late = factor(
+    if_else(arr_late_min > 10, "yes", "no"),
+    levels = c("yes", "no")
+  ))
+
+glimpse(model_data)
+nrow(model_data)
+```
+
+```{r class-imbalance}
+model_data %>%
+  count(is_severely_late) %>%
+  mutate(pct = n / sum(n))
+```
+
+## Feature Exploration and Multicollinearity Check
+
+Before building the model we explore relationships between features to identify
+redundancy and multicollinearity.
+
+### Numeric Feature Correlations
+```{r numeric-correlations}
+model_data %>%
+  select(dep_hour, stop_sequence, vessel_capacity, 
+         turn_slack_sched_min, avg_vessel_count, median_vessel_count) %>%
+  cor(use = "complete.obs") %>%
+  corrplot::corrplot(
+    method  = "color",
+    type    = "upper",
+    addCoef.col = "black",
+    tl.col  = "black",
+    tl.srt  = 45,
+    diag    = FALSE,
+    title   = "Correlation Matrix: Numeric Features",
+    mar     = c(0, 0, 1, 0)
+  )
+```
+
+### Categorical Feature Overlap
+```{r categorical-overlap}
+# Does day_of_week add information beyond schedule_daytype?
+model_data %>%
+  count(day_of_week, schedule_daytype) %>%
+  arrange(schedule_daytype, day_of_week) %>%
+  knitr::kable(caption = "Day of Week vs Schedule Day Type")
+
+# Does vessel_capacity vary within routes?
+model_data %>%
+  count(route, vessel_capacity) %>%
+  arrange(route) %>%
+  knitr::kable(caption = "Vessel Capacity by Route")
+
+# Does stop_sequence vary within routes?
+model_data %>%
+  group_by(route) %>%
+  summarise(
+    min_stop = min(stop_sequence),
+    max_stop = max(stop_sequence),
+    .groups = "drop"
+  ) %>%
+  knitr::kable(caption = "Stop Sequence Range by Route")
+```
+
+## Feature Selection
+
+Features are selected based on the multicollinearity exploration above and the
+48-hour validity constraint. Comment features in or out to test different
+combinations.
+```{r feature-selection}
+model_data <- model_data %>%
+  select(
+    is_severely_late,
+    date,
+    dep_hour,
+    schedule_season,
+    schedule_daytype,
+    day_of_week,
+    route,
+    direction,
+    stop_sequence,
+    vessel_capacity,
+    turn_slack_sched_min,
+    #avg_vessel_count,  # Comment this or median_vessel_count out because of correlation
+    median_vessel_count # Comment this or avg_vessel_count out because of correlation
+  )
+
+glimpse(model_data)
+```
+
+## Train/Test Split and Cross Validation
+
+We use a temporal train/test split, holding out June 2025 as the test set.
+We use monthly leave-one-out cross validation to prevent data leakage.
+
+```{r train-test-split}
+train_data <- model_data %>% filter(date < ymd("2025-06-01"))
+test_data  <- model_data %>% filter(date >= ymd("2025-06-01"))
+
+message("Training rows: ", nrow(train_data))
+message("Test rows: ", nrow(test_data))
+
+# Confirm class balance in each split
+train_data %>% count(is_severely_late) %>% mutate(pct = n / sum(n))
+test_data %>% count(is_severely_late) %>% mutate(pct = n / sum(n))
+```
+
+```{r cv-folds}
+train_data <- train_data %>%
+  mutate(cv_month = format(date, "%Y-%m"))
+
+cv_folds <- group_vfold_cv(train_data, group = cv_month, v = 17) # NOTE: We have 17 months of data! So 17 folds are used here.
+cv_folds
+```
+
+## Modeling
+
+The recipe defines the outcome, predictors, and all preprocessing steps. 
+We use `step_downsample` from the `themis` package to address class imbalance by reducing
+the majority class during training. 
+`date` and `cv_month` are assigned ID roles so they are carried through the pipeline 
+without being used as predictors.
+
+**NOTE**: We can tune parameters here, such as under_ratio. Important to tune performance. 
+
+```{r recipe}
+model_rec <- recipe(is_severely_late ~ ., data = train_data) %>%
+  update_role(date, new_role = "id") %>%
+  update_role(cv_month, new_role = "id") %>%
+  step_impute_median(turn_slack_sched_min) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  themis::step_downsample(is_severely_late, under_ratio = 10, seed = 614) #NOTE: Adjust under_ratio here. 1 = 50/50. 10 is 10:1 severe:non-severe
+```
+
+## Model Specification and Workflow
+```{r logistic-spec}
+logistic_spec <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+logistic_wf <- workflow() %>%
+  add_recipe(model_rec) %>%
+  add_model(logistic_spec)
+```
+
+## Cross Validation Fit
+```{r cv-fit}
+control <- control_resamples(save_pred = TRUE)
+metrics <- metric_set(roc_auc, precision, recall, f_meas)
+
+logistic_tuned <- fit_resamples(
+  logistic_wf,
+  resamples = cv_folds,
+  control   = control,
+  metrics   = metrics
+)
+
+collect_metrics(logistic_tuned)
+```
+
+## Threshold Tuning
+
+Given that false positives are operationally costly, we prioritize precision over
+recall. 
+Rather than using the default 0.5 classification threshold, we evaluate
+precision and recall across a range of thresholds using CV predictions.
+
+TODO: Is this a good approach?
+
+Note:
+Sensitivity/Recall — of all trips that were actually severely late (true positive), what percentage did the model correctly flag as severely late.
+
+Specificity — of all trips that were actually not severely late (true negative), what percentage did the model correctly identify as not severely late.
+
+```{r threshold-tuning}
+p_load(probably)
+
+# Extract CV predictions
+cv_predictions <- collect_predictions(logistic_tuned)
+
+# Evaluate across thresholds
+threshold_data <- cv_predictions %>%
+  threshold_perf(
+    truth      = is_severely_late,
+    estimate   = .pred_yes,
+    thresholds = seq(0.05, 0.95, by = 0.05),
+    event_level = "first"
+  )
+
+# Plot precision and recall across thresholds
+threshold_data %>%
+  filter(.metric %in% c("sensitivity", "specificity")) %>%
+  ggplot(aes(x = .threshold, y = .estimate, color = .metric)) +
+  geom_line() +
+  geom_point(size = 1.5) +
+  labs(
+    title = "Sensitivity and Specificity Across Classification Thresholds",
+    subtitle = "Higher threshold = fewer but more reliable alerts",
+    x = "Threshold",
+    y = "Estimate",
+    color = "Metric"
+  ) +
+  scale_color_viridis_d(option = "turbo") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+## Validate on Test Set
+```{r validate}
+model_rec_final <- recipe(is_severely_late ~ ., data = train_data %>% select(-cv_month)) %>%
+  update_role(date, new_role = "id") %>%
+  step_impute_median(turn_slack_sched_min) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  themis::step_downsample(is_severely_late, under_ratio = 10, seed = 717) # CHANGE UNDER_RATIO HERE FOR VALIDATION AS WELL
+
+logistic_wf_final <- workflow() %>%
+  add_recipe(model_rec_final) %>%
+  add_model(logistic_spec)
+
+data_split <- make_splits(
+  list(
+    analysis   = which(model_data$date < ymd("2025-06-01")),
+    assessment = which(model_data$date >= ymd("2025-06-01"))
+  ),
+  model_data
+)
+
+logistic_val_fit <- last_fit(logistic_wf_final, split = data_split, metrics = metrics)
+collect_metrics(logistic_val_fit)
+```
+
+```{r validate-2}
+data_split <- make_splits(
+  list(
+    analysis   = which(model_data$date < ymd("2025-06-01")),
+    assessment = which(model_data$date >= ymd("2025-06-01"))
+  ),
+  model_data
+)
+
+logistic_val_fit <- last_fit(logistic_wf_final, split = data_split,
+                             metrics = metric_set(roc_auc))
+
+val_predictions <- logistic_val_fit %>%
+  collect_predictions() %>%
+  mutate(.pred_class = factor(
+    if_else(.pred_yes >= 0.25, "yes", "no"),
+    levels = c("yes", "no")
+  ))
+
+val_predictions %>%
+  conf_mat(truth = is_severely_late, estimate = .pred_class)
+
+val_predictions %>%
+  precision(truth = is_severely_late, estimate = .pred_class) %>%
+  bind_rows(
+    val_predictions %>% recall(truth = is_severely_late, estimate = .pred_class),
+    val_predictions %>% f_meas(truth = is_severely_late, estimate = .pred_class)
+  ) %>%
+  knitr::kable(caption = "Validation Metrics at Threshold = 0.25", digits = 3)
+
+val_predictions %>%
+  roc_auc(truth = is_severely_late, .pred_yes) %>%
+  knitr::kable(caption = "ROC AUC at Validation", digits = 3)
+```
+
+## Presentation: Model Performance Summary
+
+These metrics describe how well the model distinguishes severe delays from on-time
+trips at the chosen classification threshold of 0.25.
+
+**Sensitivity (Recall)** — Of all trips that were *actually* severely late, what
+percentage did the model correctly flag? High sensitivity means fewer missed delays.
+A missed delay that wasn't flagged is a false negative.
+
+**Precision** — Of all trips the model *predicted* to be severely late, what
+percentage actually were? High precision means fewer false alarms. An unnecessary
+alert is a false positive.
+
+**Specificity** — Of all trips that were *actually not* severely late, what
+percentage did the model correctly leave unflagged? High specificity means the model
+isn't flooding operators with noise.
+
+There is an inherent tradeoff: raising the threshold increases precision and
+specificity but reduces sensitivity (the threshold tuning plot above illustrates this).
+The 0.25 threshold is chosen to favor catching more delays at the cost of more false
+positives.
+
+**ROC AUC** A value of 0.5 is no better than chance; 1.0 is perfect. 
+
+```{r presentation-metrics}
+# --- Metric table: sensitivity, precision, specificity at threshold = 0.25 ---
+presentation_metrics <- bind_rows(
+  val_predictions %>% sensitivity(truth = is_severely_late, estimate = .pred_class),
+  val_predictions %>% precision(truth  = is_severely_late, estimate = .pred_class),
+  val_predictions %>% specificity(truth = is_severely_late, estimate = .pred_class),
+  val_predictions %>% f_meas(truth     = is_severely_late, estimate = .pred_class),
+  val_predictions %>% roc_auc(truth    = is_severely_late, .pred_yes)
+) %>%
+  mutate(
+    .metric = recode(.metric,
+      sensitivity = "Sensitivity (Recall)",
+      precision   = "Precision",
+      specificity = "Specificity",
+      f_meas      = "F1 Score",
+      roc_auc     = "ROC AUC"
+    )
+  ) %>%
+  select(Metric = .metric, Estimate = .estimate)
+
+knitr::kable(presentation_metrics,
+             caption = "Validation Performance at Threshold = 0.25",
+             digits  = 3)
+
+# --- ROC curve ---
+val_predictions %>%
+  roc_curve(truth = is_severely_late, .pred_yes, event_level = "first") %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path(color = "#440154", linewidth = 1) +
+  geom_abline(lty = 2, color = "gray50") +
+  labs(
+    title    = "ROC Curve — Validation Set",
+    subtitle = paste0("AUC = ",
+      round(val_predictions %>%
+        roc_auc(truth = is_severely_late, .pred_yes) %>%
+        pull(.estimate), 3)),
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)"
+  ) +
+  theme_minimal()
+```
