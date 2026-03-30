@@ -33,6 +33,13 @@ stop_sequence — position of stop within the route
 vessel_capacity — 150 or 350 passenger vessel
 turn_slack_sched_min — scheduled turnaround buffer
 median_vessel_count — median unique vessels in 500m buffer around stop, from AIS historical averages
+
+**Initial Results:**
+Validation Metrics at Threshold = 0.25
+.metric	  .estimator	.estimate
+precision	binary	    0.053
+recall	  binary	    0.202
+f_meas	  binary	    0.084
   
   
   
