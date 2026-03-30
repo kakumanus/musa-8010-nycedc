@@ -231,6 +231,11 @@ precision and recall across a range of thresholds using CV predictions.
 
 TODO: Is this a good approach?
 
+Note:
+Sensitivity/Recall — of all trips that were actually severely late (true positive), what percentage did the model correctly flag as severely late.
+
+Specificity — of all trips that were actually not severely late (true negative), what percentage did the model correctly identify as not severely late.
+
 ```{r threshold-tuning}
 p_load(probably)
 
@@ -264,7 +269,6 @@ threshold_data %>%
   theme(legend.position = "bottom")
 ```
 
-
 ## Validate on Test Set
 ```{r validate}
 model_rec_final <- recipe(is_severely_late ~ ., data = train_data %>% select(-cv_month)) %>%
@@ -291,6 +295,39 @@ logistic_val_fit <- last_fit(logistic_wf_final, split = data_split, metrics = me
 collect_metrics(logistic_val_fit)
 ```
 
+```{r validate-2}
+data_split <- make_splits(
+  list(
+    analysis   = which(model_data$date < ymd("2025-06-01")),
+    assessment = which(model_data$date >= ymd("2025-06-01"))
+  ),
+  model_data
+)
 
+logistic_val_fit <- last_fit(logistic_wf_final, split = data_split,
+                             metrics = metric_set(roc_auc))
+
+val_predictions <- logistic_val_fit %>%
+  collect_predictions() %>%
+  mutate(.pred_class = factor(
+    if_else(.pred_yes >= 0.25, "yes", "no"),
+    levels = c("yes", "no")
+  ))
+
+val_predictions %>%
+  conf_mat(truth = is_severely_late, estimate = .pred_class)
+
+val_predictions %>%
+  precision(truth = is_severely_late, estimate = .pred_class) %>%
+  bind_rows(
+    val_predictions %>% recall(truth = is_severely_late, estimate = .pred_class),
+    val_predictions %>% f_meas(truth = is_severely_late, estimate = .pred_class)
+  ) %>%
+  knitr::kable(caption = "Validation Metrics at Threshold = 0.25", digits = 3)
+
+val_predictions %>%
+  roc_auc(truth = is_severely_late, .pred_yes) %>%
+  knitr::kable(caption = "ROC AUC at Validation", digits = 3)
+```
 
 
