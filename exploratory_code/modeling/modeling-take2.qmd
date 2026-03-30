@@ -330,4 +330,68 @@ val_predictions %>%
   knitr::kable(caption = "ROC AUC at Validation", digits = 3)
 ```
 
+## Presentation: Model Performance Summary
 
+These metrics describe how well the model distinguishes severe delays from on-time
+trips at the chosen classification threshold of 0.25.
+
+**Sensitivity (Recall)** — Of all trips that were *actually* severely late, what
+percentage did the model correctly flag? High sensitivity means fewer missed delays.
+A missed delay that wasn't flagged is a false negative.
+
+**Precision** — Of all trips the model *predicted* to be severely late, what
+percentage actually were? High precision means fewer false alarms. An unnecessary
+alert is a false positive.
+
+**Specificity** — Of all trips that were *actually not* severely late, what
+percentage did the model correctly leave unflagged? High specificity means the model
+isn't flooding operators with noise.
+
+There is an inherent tradeoff: raising the threshold increases precision and
+specificity but reduces sensitivity (the threshold tuning plot above illustrates this).
+The 0.25 threshold is chosen to favor catching more delays at the cost of more false
+positives.
+
+**ROC AUC** A value of 0.5 is no better than chance; 1.0 is perfect. 
+
+```{r presentation-metrics}
+# --- Metric table: sensitivity, precision, specificity at threshold = 0.25 ---
+presentation_metrics <- bind_rows(
+  val_predictions %>% sensitivity(truth = is_severely_late, estimate = .pred_class),
+  val_predictions %>% precision(truth  = is_severely_late, estimate = .pred_class),
+  val_predictions %>% specificity(truth = is_severely_late, estimate = .pred_class),
+  val_predictions %>% f_meas(truth     = is_severely_late, estimate = .pred_class),
+  val_predictions %>% roc_auc(truth    = is_severely_late, .pred_yes)
+) %>%
+  mutate(
+    .metric = recode(.metric,
+      sensitivity = "Sensitivity (Recall)",
+      precision   = "Precision",
+      specificity = "Specificity",
+      f_meas      = "F1 Score",
+      roc_auc     = "ROC AUC"
+    )
+  ) %>%
+  select(Metric = .metric, Estimate = .estimate)
+
+knitr::kable(presentation_metrics,
+             caption = "Validation Performance at Threshold = 0.25",
+             digits  = 3)
+
+# --- ROC curve ---
+val_predictions %>%
+  roc_curve(truth = is_severely_late, .pred_yes, event_level = "first") %>%
+  ggplot(aes(x = 1 - specificity, y = sensitivity)) +
+  geom_path(color = "#440154", linewidth = 1) +
+  geom_abline(lty = 2, color = "gray50") +
+  labs(
+    title    = "ROC Curve — Validation Set",
+    subtitle = paste0("AUC = ",
+      round(val_predictions %>%
+        roc_auc(truth = is_severely_late, .pred_yes) %>%
+        pull(.estimate), 3)),
+    x = "False Positive Rate (1 - Specificity)",
+    y = "True Positive Rate (Sensitivity)"
+  ) +
+  theme_minimal()
+```

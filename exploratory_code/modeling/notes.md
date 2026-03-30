@@ -40,6 +40,14 @@ Validation Metrics at Threshold = 0.25
 precision	binary	    0.053
 recall	  binary	    0.202
 f_meas	  binary	    0.084
+
+Validation Performance at Threshold = 0.25
+Metric	              Estimate
+Sensitivity (Recall)	0.202
+Precision	            0.053
+Specificity	          0.918
+F1 Score	            0.084
+ROC AUC	              0.672
   
   
   
