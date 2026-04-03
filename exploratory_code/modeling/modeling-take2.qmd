@@ -355,6 +355,8 @@ positives.
 **ROC AUC** A value of 0.5 is no better than chance; 1.0 is perfect. 
 
 ```{r presentation-metrics}
+#| message: false
+#| warning: false
 # --- Metric table: sensitivity, precision, specificity at threshold = 0.25 ---
 presentation_metrics <- bind_rows(
   val_predictions %>% sensitivity(truth = is_severely_late, estimate = .pred_class),
@@ -394,4 +396,29 @@ val_predictions %>%
     y = "True Positive Rate (Sensitivity)"
   ) +
   theme_minimal()
+```
+
+## Presentation: Model Coefficients
+
+Logistic regression produces a coefficient for each predictor. Exponentiating
+these gives **odds ratios**
+A value greater than 1 means the feature increases the odds of a severe delay.
+Less than 1 means it decreases them. 
+A confidence interval that crosses 1 indicates the association is not reliable.
+
+```{r presentation-coefficients}
+p_load(broom)
+
+extract_fit_parsnip(logistic_val_fit) %>%
+  tidy(exponentiate = TRUE, conf.int = TRUE) %>%
+  filter(term != "(Intercept)") %>%
+  arrange(p.value) %>%
+  select(
+    Term        = term,
+    `Odds Ratio` = estimate,
+    `95% CI Low`  = conf.low,
+    `95% CI High` = conf.high,
+    `p-value`     = p.value
+  ) %>%
+  knitr::kable(caption = "Odds Ratios — Logistic Regression Coefficients", digits = 3)
 ```

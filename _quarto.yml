@@ -11,7 +11,6 @@ website:
   navbar:
     background: primary
     search: true
-    
     right:
       - icon: github
         href: https://github.com/kakumanus/musa-8010-nycedc
@@ -20,11 +19,11 @@ website:
 format:
   html:
     theme: 
-      light: [cosmo]
-      dark: [darkly]
+      light: [flatly, nycferry.scss]
+      dark: [darkly, nycferry-dark.scss]
     toc: true
     toc-depth: 3
-    toc-location: right
+    toc-location: left
     toc-title: "On This Page"
     code-fold: true
     code-tools: true
