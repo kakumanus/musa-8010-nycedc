@@ -10,5 +10,5 @@ format:
 ## Navigate The Project Website
 
 ### Exploratory Analysis
-- [**Swiftly Data**](exploratory_code/swiftly_eda/swiftly_eda.Rmd)
-- [**AIS Data**](exploratory_code/ais-eda/ais-exploration-1.qmd)
+- [**Technical Report**](nyc_ferry_technical_report/technical_report.qmd)
+- [**Application**]()

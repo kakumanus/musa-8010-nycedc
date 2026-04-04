@@ -1,0 +1,59 @@
+/*-- scss:defaults --*/
+
+/* Google Fonts */
+@import url('https://fonts.googleapis.com/css2?family=Lato:wght@300;400;700;900&family=Oswald:wght@400;500;700&display=swap');
+
+/* Brand Colors */
+$nyc-dark-blue:  #001D41;
+$nyc-light-blue: #00A1DF;
+$nyc-cool-gray:  #53565A;
+$nyc-light-gray: #D9E1E2;
+
+/* Quarto variable overrides */
+$primary:                 $nyc-dark-blue;
+$secondary:               $nyc-light-blue;
+$link-color:              $nyc-light-blue;
+$font-family-sans-serif:  'Lato', sans-serif;
+$headings-font-family:    'Oswald', sans-serif;
+$navbar-bg:               $nyc-dark-blue;
+$navbar-fg:               #ffffff;
+$code-block-bg:           $nyc-light-gray;
+$border-color:            $nyc-light-gray;
+
+/*-- scss:rules --*/
+
+h1, h2, h3, h4 {
+  font-family: 'Oswald', sans-serif;
+  color: $nyc-dark-blue;
+  letter-spacing: 0.5px;
+}
+
+.navbar-brand {
+  font-family: 'Oswald', sans-serif;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+#TOC a {
+  color: $nyc-cool-gray;
+}
+
+#TOC a:hover,
+#TOC a.active {
+  color: $nyc-light-blue;
+  font-weight: 700;
+}
+
+hr {
+  border-color: $nyc-light-blue;
+  border-width: 2px;
+}
+
+.nav-footer {
+  background-color: $nyc-dark-blue;
+  color: #ffffff;
+}
+
+.nav-footer a {
+  color: $nyc-light-blue;
+}
