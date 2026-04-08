@@ -1,16 +1,17 @@
 export const FERRY_ROUTE_COLORS: Record<string, string> = {
   ER: '#228B9D',
-  SB: '#FFD100',
-  AS: '#FE5000',
-  SG: '#D0006F',
-  GI: '#9893A0',
+  SBK: '#FFD100',
+  AST: '#FE5000',
+  RWS: '#4E008E',
+  STG: '#D0006F',
+  GOV: '#9893A0',
 }
 
 export const MAP_CENTER: [number, number] = [-74.006, 40.7128]
 export const MAP_DEFAULT_ZOOM = 11
 export const CARTO_DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 
-export const FERRY_ROUTES = ['ER', 'SB', 'AS', 'SG', 'GI'] as const
+export const FERRY_ROUTES = ['ER', 'SBK', 'AST', 'RWS', 'STG', 'GOV'] as const
 export type FerryRoute = (typeof FERRY_ROUTES)[number]
 
 export const PLACEHOLDER_STOPS: Record<string, [number, number]> = {
