@@ -1,0 +1,609 @@
+---
+title: "Swiftly GPS Data Exploration 2"
+author: "Tyler Maynard"
+date: "2026-04-04"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+## Dataset Overview
+
+The Swiftly GPS dataset contains location data every 10-60 seconds from the NYC Ferry AVL system. Columns include vessel, route, trip, block, and coordinates. This will be especially useful in calculating the speed of the vehicle at various points in time, helping identify locations, routes, and trips where the system struggles with on-time performance.
+
+## Libraries
+
+```{r libraries, warning=FALSE, message=FALSE}
+library(tidyverse)    
+library(sf)
+library(kableExtra)
+library(grid)
+library(gridExtra)
+library(viridis)
+library(lubridate)
+library(ggthemes)
+library(ggspatial)
+library(leaflet)
+library(spatstat)
+library(spdep)
+library(htmlwidgets)
+library(concaveman)
+library(patchwork)
+library(hms)
+library(lwgeom)
+library(duckdb)
+library(data.table)
+library(tidytransit)
+library(gtfsio)
+
+```
+
+## Swiftly Data
+
+The Swiftly GPS data set is available by month in CSV files. The following chunk of code reads all CSV files from January 2024 to June 2025, filters to the dates included in the sample week, and parses out each record's date and time into separate columns.
+
+NOTE: The January 2024 data had three missing columns (none of which are important for this analysis), so those needed to be filtered out of the other files.
+
+```{r data_import, warning=FALSE, message=FALSE}
+
+# Setting Box Drive Root
+box_root_path <- "C:\\Users\\tjama\\Box\\NYC_Ferry"
+
+# Original csv
+
+jan2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_01.csv"))
+feb2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_02.csv"))
+mar2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_03.csv"))
+apr2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_04.csv"))
+may2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_05.csv"))
+jun2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_06.csv"))
+jul2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_07.csv"))
+aug2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_08.csv"))
+sep2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_09.csv"))
+oct2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_10.csv"))
+nov2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_11.csv"))
+dec2024_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2024_12.csv"))
+jan2025_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_01.csv"))
+feb2025_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_02.csv"))
+mar2025_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_03.csv"))
+apr2025_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_04.csv"))
+may2025_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_05.csv"))
+jun2025_original <- fread(file.path(box_root_path, "\\data\\NYCF_data_compiled\\swiftly_gps\\swiftly_gps", "swiftly_gps.2025_06.csv"))
+
+all_first <- rbindlist(list(
+  feb2024_original, mar2024_original, apr2024_original,
+  may2024_original, jun2024_original, jul2024_original,
+  aug2024_original, sep2024_original, oct2024_original,
+  nov2024_original, dec2024_original, jan2025_original,
+  feb2025_original, mar2025_original, apr2025_original,
+  may2025_original, jun2025_original
+), fill = TRUE)  # fill = TRUE handles mismatched columns automatically
+
+all_first <- all_first %>%
+  select(-data.data.unpredictablestatus.type, -data.data.unpredictablestatus.details.blockId, -data.data.unpredictablestatus.details.serviceDate)
+
+all_table <- rbindlist(list(
+  jan2024_original, all_first
+), fill = TRUE)  # fill = TRUE handles mismatched columns automatically
+
+rm(box_root_path, all_first, jan2024_original, feb2024_original, mar2024_original, apr2024_original,
+  may2024_original, jun2024_original, jul2024_original,
+  aug2024_original, sep2024_original, oct2024_original,
+  nov2024_original, dec2024_original, jan2025_original,
+  feb2025_original, mar2025_original, apr2025_original,
+  may2025_original, jun2025_original)
+
+# Removing extra 'data.' from column names, removing unneeded columns
+all_table <- all_table %>%
+  rename_with(~ gsub("data.", "", .x)) %>%
+  select(-(1:3), -(7))
+
+# Remove NAs in route column
+all_table <- all_table %>%
+  filter(routeId %in% c("AS", "ER", "RES", "RS", "RWS", "SB", "SG")) %>%
+  select("time","lat","lon","routeId","tripId","directionId","vehicleId","blockId","schedAdhMsec")
+
+# Parse dates and times
+all_table[, date_time := ymd_hms(time, tz = "America/New_York")]
+
+all_table[, `:=`(
+  date = as.Date(date_time),
+  time = format(date_time, "%H:%M:%S"),
+  hour = hour(date_time),
+  dayOfWeek = lubridate::wday(date_time, label = TRUE, abbr = FALSE, week_start = 1),
+  directionId = case_when(
+    directionId == "1" ~ "NB",
+    TRUE ~ "SB"
+  ),
+  joinId = paste(
+    lubridate::wday(date_time, label = TRUE, abbr = FALSE, week_start = 1),
+    routeId, tripId, directionId,
+    sep = " "
+  )
+)]
+
+all_table <- all_table[!is.na(tripId)][order(vehicleId, date_time)]
+
+all_table <- all_table %>%
+  select("date_time","date","dayOfWeek","time","hour","joinId","routeId","tripId","directionId","vehicleId","blockId","schedAdhMsec","lat","lon"
+) %>%
+  mutate(
+    lat1 = lat,
+    lon1 = lon
+  )
+
+```
+
+## Shapefiles
+
+As a way to add more of a spatial context to this analysis, the landings and routes (old system were extracted from the NYC Ferry and NYC OpenData websites.
+
+```{r sf_objects, warning=FALSE, message=FALSE}
+
+# Download file in GitHub and change path
+landings <- read_sf("C:\\Users\\tjama\\Practicum\\Landings\\landings.shp") %>% 
+  st_transform(32118)
+
+# Download file in GitHub and change path
+routes_new <- read_sf("C:\\Users\\tjama\\Practicum\\Landings\\routes.shp") %>%
+  group_by(route_id) %>%
+  summarise() %>% 
+  st_transform(32118)
+
+routes <- read_sf("C:\\Users\\tjama\\Practicum\\Landings\\NYCF_Routes.shp") %>%
+  st_transform(32118) %>%
+  mutate(
+    route_id = case_when(
+      Route_Name == "Astoria" ~ "AS",      
+      Route_Name == "East River" ~ "ER", 
+      Route_Name == "South Brooklyn" ~ "SB",   
+      Route_Name == "St. George" ~ "SG",
+      Route_Name == "Soundview" ~ "SV",      
+      Route_Name == "Rockaway" ~ "RW",      
+      TRUE ~ "GI"
+    )
+  )
+
+```
+
+## Data Cleaning
+
+The following chunk does more data cleaning, creates sf object for each of the data points, and computes some new fields for feature engineering. Some features created in this chunk include the following:
+
+-   Knots
+
+    -   Based on the time and distance of the previous node of the same trip.
+
+-   Key identifiers
+
+    -   A number of these were created for different analyses, but generally at a base level include the date, trip, and route.
+
+-   OTP
+
+    -   This column classifies the on-time performance at each node based on the schedule adherence column (schedAdhMsec).
+
+-   Excessively Late
+
+    -   This is a binary field that assigns each record to a label of either excessively late (more than 10 minutes past the expected time) or not.
+
+-   First Record Late
+
+    -   Indicates if the trip starts out five minutes past its scheduled time.
+
+-   Cumulative Distance and Time
+
+    -   Computes the total distance and time duration of a trip.
+
+To visualize the exact boundaries at which we se higher concentrations of excessively late data points, a concave polygon was created. This object could be useful (or not) for the future, but exists here if needed for future analyses.
+
+
+```{r cleaning_up, warning=FALSE, message=FALSE}
+
+all <- st_as_sf(all_table, coords = c("lon", "lat"), crs = 4326) %>%
+  st_transform(32118)
+
+xy <- st_coordinates(all)
+
+# convert back to data.table, dropping geometry
+all <- as.data.table(all)
+all[, geometry := NULL]  # drop sf geometry column
+
+# now add x and y
+all[, `:=`(
+  x = xy[, 1],
+  y = xy[, 2]
+)]
+
+group_cols <- c("joinId")
+
+setorder(all, joinId, date_time)
+
+all[, `:=`(
+  isFirst = seq_len(.N) == 1,
+  isSecond = seq_len(.N) == 2,
+  dist_to_prev_m = fifelse(
+    seq_len(.N) == 1,
+    0,
+    round(sqrt((x - shift(x))^2 + (y - shift(y))^2), 2)
+  ),
+  time_diff_sec = fifelse(
+    seq_len(.N) == 1,
+    0,
+    as.numeric(difftime(date_time, shift(date_time), units = "secs"))
+  ),
+  countDailyTrip = .N
+), by = group_cols]
+
+all[, `:=`(
+  cum_dist_m = cumsum(dist_to_prev_m),
+  cum_time_sec = cumsum(time_diff_sec)
+), by = group_cols]
+
+all[, m_per_sec := fifelse(
+  is.na(time_diff_sec) | time_diff_sec <= 0,
+  0,
+  round(dist_to_prev_m / time_diff_sec, 2)
+)]
+
+all[, knots := m_per_sec * 1.94384]
+
+all[, `:=`(
+  date_route_trip_direction_vehicle_dow = paste(date, routeId, tripId, directionId, vehicleId, dayOfWeek, sep = " "),
+  key_identifier = paste(date, blockId, routeId, tripId, directionId, dayOfWeek, sep = " "),
+  dailyTrip = paste(dayOfWeek, routeId, tripId, sep = " "),
+  OTP = fcase(
+    schedAdhMsec < -60000, "Early",
+    schedAdhMsec > 600000, "Excessively Late",
+    schedAdhMsec > 300000, "Late",
+    default = "Ontime"
+  ),
+  timeOfDay = hour(date_time)
+)]
+
+all[, excessivelyLate := fifelse(OTP == "Excessively Late", 1L, 0L)]
+
+all[, firstRecordLate := fifelse(
+  isSecond & OTP %chin% c("Late", "Excessively Late"),
+  "Yes",
+  "No"
+)]
+
+all[, OTP_prev := shift(OTP), by = group_cols]
+
+all[, OTP_changed := fifelse(is.na(OTP_prev), FALSE, OTP != OTP_prev)]
+
+all[, OTP_transition := fcase(
+  isFirst, "Start",
+  is.na(OTP_prev), "Start",
+  OTP == OTP_prev, "No Change",
+  default = paste0(OTP_prev, " -> ", OTP)
+)]
+
+final_cols <- c(
+  "dailyTrip", "key_identifier", "date_route_trip_direction_vehicle_dow",
+  "date", "time", "OTP", "OTP_transition",
+  "excessivelyLate", "timeOfDay", "schedAdhMsec", "dayOfWeek",
+  "dist_to_prev_m", "time_diff_sec", "knots", "lat1", "lon1"
+)
+
+all[, c("x", "y", "m_per_sec") := NULL]
+
+setcolorder(
+  all,
+  c(
+    final_cols,
+    setdiff(names(all), c(final_cols, "date_time")),
+    "date_time"
+  )
+)
+
+```
+
+The all_long computes the average distance and time traveled for each trip for each day, and includes the 7-day lag values for them. In situations where there data did not exist for 7 days prior (e.g., the first week of data available), the values for that day were used.
+
+```{r pivot_vessel2, warning=FALSE, message=FALSE}
+
+all_long <- all %>%
+  group_by(date, joinId) %>%
+  summarise(
+    total_distance = max(cum_dist_m),
+    total_time = max(cum_time_sec),
+    knots = total_distance / total_time * 1.94384,
+    .groups = "drop"
+  )
+
+lag_table <- all_long %>%
+  select(date, joinId, total_distance, total_time, knots) %>%
+  rename(
+    lag_date = date,
+    lag_7d_distance = total_distance,
+    lag_7d_time = total_time,
+    lag_7d_knots = knots
+  )
+
+all_long <- all_long %>%
+  mutate(lag_date = date - 7) %>%
+  left_join(lag_table, by = c("joinId", "lag_date")) %>%
+  mutate(
+    lag_7d_distance = coalesce(lag_7d_distance, total_distance),
+    lag_7d_time = coalesce(lag_7d_time, total_time),
+    lag_7d_knots = coalesce(lag_7d_knots, knots),
+    change_in_distance = (total_distance - lag_7d_distance) / lag_7d_distance,
+    change_in_time = (total_time - lag_7d_time) / lag_7d_time,
+    change_in_knots = (knots - lag_7d_knots) / lag_7d_knots
+  )
+
+all_long <- all_long %>%
+  mutate(
+    change_in_distance = round(((total_distance - lag_7d_distance) / lag_7d_distance * 100), 2),
+    change_in_time = round(((total_time - lag_7d_time) / total_time * 100), 2),
+    change_in_knots = round(((knots - lag_7d_knots) / lag_7d_knots * 100), 2)
+  )
+
+```
+
+## Segmentation of New Routes
+
+
+
+```{r new_route_segments, warning=FALSE, message=FALSE}
+
+gtfs <- import_gtfs("C:\\Users\\tjama\\Practicum\\GTFS\\gtfs.zip")
+
+stops       <- gtfs$stops
+stop_times  <- gtfs$stop_times
+trips       <- gtfs$trips
+routes      <- gtfs$routes
+shapes      <- gtfs$shapes
+
+# representative trip for each shape
+rep_trips <- trips %>%
+  filter(!is.na(shape_id)) %>%
+  group_by(route_id, direction_id, shape_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(trip_id, route_id, direction_id, shape_id)
+
+segment_list <- lapply(seq_len(nrow(rep_trips)), function(j) {
+
+  target_trip  <- rep_trips$trip_id[j]
+  target_shape <- rep_trips$shape_id[j]
+  target_route <- rep_trips$route_id[j]
+  target_dir   <- rep_trips$direction_id[j]
+
+  # shape line
+  shape_line <- shapes %>%
+    filter(shape_id == target_shape) %>%
+    arrange(shape_pt_sequence) %>%
+    st_as_sf(coords = c("shape_pt_lon", "shape_pt_lat"), crs = 4326) %>%
+    summarise(do_union = FALSE) %>%
+    st_cast("LINESTRING")
+
+  # stops for this trip
+  trip_stops <- stop_times %>%
+    filter(trip_id == target_trip) %>%
+    arrange(stop_sequence) %>%
+    left_join(stops, by = "stop_id") %>%
+    st_as_sf(coords = c("stop_lon", "stop_lat"), crs = 4326)
+
+  # skip bad cases
+  if (nrow(trip_stops) < 2 || nrow(shape_line) == 0) return(NULL)
+
+  # project CRS
+  shape_line <- st_transform(shape_line, 32118)
+  trip_stops <- st_transform(trip_stops, 32118)
+
+  # snap stops to line
+  trip_stops_snap <- st_snap(trip_stops, shape_line, tolerance = 100)
+
+  # locate stops along line
+  locs <- sf::st_line_project(
+    st_geometry(shape_line),
+    st_geometry(trip_stops_snap),
+    normalized = TRUE
+  ) |> as.numeric()
+
+  # if lengths mismatch, skip
+  if (length(locs) != nrow(trip_stops_snap)) return(NULL)
+
+  trip_stops_snap <- trip_stops_snap %>%
+    mutate(loc = locs) %>%
+    arrange(stop_sequence)
+
+  # build stop-to-stop segments
+  segs <- lapply(seq_len(nrow(trip_stops_snap) - 1), function(i) {
+    lwgeom::st_linesubstring(
+      st_geometry(shape_line)[[1]],
+      trip_stops_snap$loc[i],
+      trip_stops_snap$loc[i + 1]
+    )
+  })
+
+  st_sf(
+    trip_id      = target_trip,
+    route_id     = target_route,
+    direction_id = target_dir,
+    shape_id     = target_shape,
+    from_stop_id = trip_stops_snap$stop_id[-nrow(trip_stops_snap)],
+    to_stop_id   = trip_stops_snap$stop_id[-1],
+    from_seq     = trip_stops_snap$stop_sequence[-nrow(trip_stops_snap)],
+    to_seq       = trip_stops_snap$stop_sequence[-1],
+    geometry     = st_sfc(segs, crs = st_crs(shape_line))
+  ) %>%
+    mutate(segment_length = as.numeric(st_length(geometry)))
+})
+
+segments_sf <- do.call(rbind, segment_list) %>%
+  rename(
+    "routeId" = route_id
+  )
+
+segments_sf1 <- segments_sf %>%
+  st_join(segments_sf, landings, join = st_nearest_feature)
+
+st_write(segments_sf, "new_routes_segmentation.geojson", delete_dsn = TRUE)
+
+# 1. Join segments within buffer
+joined <- landings %>%
+  st_join(
+    segments_sf,
+    join = st_is_within_distance,
+    dist = 1,
+    suffix = c("", "_line")
+  ) %>%
+  filter(!is.na(routeId))
+
+# 2. Compute distance to each matched segment
+matched_segments <- segments_sf[match(joined$routeId, segments_sf$routeId), ]
+
+joined$dist_to_route <- st_distance(joined, matched_segments, by_element = TRUE)
+
+# 3. Keep up to 2 closest segments per landing per route (one each direction)
+#    falls back to 1 if only 1 segment is within buffer (end of line)
+joined <- joined %>%
+  group_by(, routeId) %>%      # replace landing_id with your point ID
+  arrange(dist_to_route) %>%
+  slice_head(n = 2) %>%                  # up to 2 (one per direction)
+  ungroup()
+
+ggplot() +
+  geom_sf(data = segments_sf, aes(color = factor(segment_length))) +
+  geom_sf(data = landings) +
+  theme_solid()
+
+```
+
+## Segmentation of Old Routes
+
+```{r route_segments, warning=FALSE, message=FALSE}
+
+gtfs <- import_gtfs("C:\\Users\\tjama\\Practicum\\GTFS\\gtfs.zip")
+
+stops       <- gtfs$stops
+stop_times  <- gtfs$stop_times
+trips       <- gtfs$trips
+routes      <- gtfs$routes
+shapes      <- gtfs$shapes
+
+# representative trip for each shape
+rep_trips <- trips %>%
+  filter(!is.na(shape_id)) %>%
+  group_by(route_id, direction_id, shape_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(trip_id, route_id, direction_id, shape_id)
+
+segment_list <- lapply(seq_len(nrow(rep_trips)), function(j) {
+
+  target_trip  <- rep_trips$trip_id[j]
+  target_shape <- rep_trips$shape_id[j]
+  target_route <- rep_trips$route_id[j]
+  target_dir   <- rep_trips$direction_id[j]
+
+  # shape line
+  shape_line <- shapes %>%
+    filter(shape_id == target_shape) %>%
+    arrange(shape_pt_sequence) %>%
+    st_as_sf(coords = c("shape_pt_lon", "shape_pt_lat"), crs = 4326) %>%
+    summarise(do_union = FALSE) %>%
+    st_cast("LINESTRING")
+
+  # stops for this trip
+  trip_stops <- stop_times %>%
+    filter(trip_id == target_trip) %>%
+    arrange(stop_sequence) %>%
+    left_join(stops, by = "stop_id") %>%
+    st_as_sf(coords = c("stop_lon", "stop_lat"), crs = 4326)
+
+  # skip bad cases
+  if (nrow(trip_stops) < 2 || nrow(shape_line) == 0) return(NULL)
+
+  # project CRS
+  shape_line <- st_transform(shape_line, 32118)
+  trip_stops <- st_transform(trip_stops, 32118)
+
+  # snap stops to line
+  trip_stops_snap <- st_snap(trip_stops, shape_line, tolerance = 100)
+
+  # locate stops along line
+  locs <- sf::st_line_project(
+    st_geometry(shape_line),
+    st_geometry(trip_stops_snap),
+    normalized = TRUE
+  ) |> as.numeric()
+
+  # if lengths mismatch, skip
+  if (length(locs) != nrow(trip_stops_snap)) return(NULL)
+
+  trip_stops_snap <- trip_stops_snap %>%
+    mutate(loc = locs) %>%
+    arrange(stop_sequence)
+
+  # build stop-to-stop segments
+  segs <- lapply(seq_len(nrow(trip_stops_snap) - 1), function(i) {
+    lwgeom::st_linesubstring(
+      st_geometry(shape_line)[[1]],
+      trip_stops_snap$loc[i],
+      trip_stops_snap$loc[i + 1]
+    )
+  })
+
+  st_sf(
+    trip_id      = target_trip,
+    route_id     = target_route,
+    direction_id = target_dir,
+    shape_id     = target_shape,
+    from_stop_id = trip_stops_snap$stop_id[-nrow(trip_stops_snap)],
+    to_stop_id   = trip_stops_snap$stop_id[-1],
+    from_seq     = trip_stops_snap$stop_sequence[-nrow(trip_stops_snap)],
+    to_seq       = trip_stops_snap$stop_sequence[-1],
+    geometry     = st_sfc(segs, crs = st_crs(shape_line))
+  ) %>%
+    mutate(segment_length = as.numeric(st_length(geometry)))
+})
+
+segments_sf <- do.call(rbind, segment_list) %>%
+  rename(
+    "routeId" = route_id
+  )
+
+segments_sf1 <- segments_sf %>%
+  st_join(segments_sf, landings, join = st_nearest_feature)
+
+st_write(segments_sf, "new_routes_segmentation.geojson", delete_dsn = TRUE)
+
+# 1. Join segments within buffer
+joined <- landings %>%
+  st_join(
+    segments_sf,
+    join = st_is_within_distance,
+    dist = 1,
+    suffix = c("", "_line")
+  ) %>%
+  filter(!is.na(routeId))
+
+# 2. Compute distance to each matched segment
+matched_segments <- segments_sf[match(joined$routeId, segments_sf$routeId), ]
+
+joined$dist_to_route <- st_distance(joined, matched_segments, by_element = TRUE)
+
+# 3. Keep up to 2 closest segments per landing per route (one each direction)
+#    falls back to 1 if only 1 segment is within buffer (end of line)
+joined <- joined %>%
+  group_by(, routeId) %>%      # replace landing_id with your point ID
+  arrange(dist_to_route) %>%
+  slice_head(n = 2) %>%                  # up to 2 (one per direction)
+  ungroup()
+
+ggplot() +
+  geom_sf(data = segments_sf, aes(color = factor(segment_length))) +
+  geom_sf(data = landings) +
+  theme_solid()
+
+```
