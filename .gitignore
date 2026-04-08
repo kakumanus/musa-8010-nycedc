@@ -29,3 +29,10 @@ exploratory_code/ridership_eda/.DS_Store
 exploratory_code/ais-eda/.DS_Store
 exploratory_code/.DS_Store
 .DS_Store
+
+# nyc_ferry_app (Astro)
+nyc_ferry_app/node_modules/
+nyc_ferry_app/dist/
+nyc_ferry_app/.astro/
+nyc_ferry_app/.env
+nyc_ferry_app/.env.*

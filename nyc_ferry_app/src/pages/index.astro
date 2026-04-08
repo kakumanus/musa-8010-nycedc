@@ -1,0 +1,14 @@
+---
+import Layout from '../layouts/Layout.astro'
+import Navbar from '../components/layout/Navbar.astro'
+import Footer from '../components/layout/Footer.astro'
+import AppShell from '../components/AppShell.vue'
+---
+
+<Layout title="NYC Ferry Delay Prediction">
+  <Navbar />
+  <main class="flex-1 relative overflow-hidden">
+    <AppShell client:load />
+  </main>
+  <Footer />
+</Layout>
