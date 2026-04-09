@@ -49,6 +49,26 @@ The sidebar view (input form vs. prediction output) is managed in `AppShell.vue`
 
 ---
 
+## Node version
+
+This project requires Node **24.3.0** (see `package.json`).
+
+**Mac/Linux** — use [nvm](https://github.com/nvm-sh/nvm):
+```bash
+nvm install 24.3.0
+nvm use 24.3.0
+```
+
+**Windows** — use [nvm-windows](https://github.com/coreybutler/nvm-windows/releases) (download and run `nvm-setup.exe`), then:
+```bash
+nvm install 24.3.0
+nvm use 24.3.0
+```
+
+Verify with `node --version` before running anything else.
+
+---
+
 ## Commands
 
 Run these from the `nyc_ferry_app/` directory.
