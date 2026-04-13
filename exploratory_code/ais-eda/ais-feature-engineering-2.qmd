@@ -1,0 +1,323 @@
+---
+title: "AIS Feature Engineering — Route Segment Corridors"
+format: html
+author: Sujan Kakumanu
+---
+
+Historical AIS traffic averages by route segment, direction, day of week, and hour.
+Each segment is a corridor between two consecutive ferry stops along a specific GTFS
+shape. Stop areas (500m radius) are subtracted from segment buffers (250m) to isolate
+mid-corridor traffic and avoid overlap with the stop-level features in
+`AIS_historical_averages.csv`.
+
+```{r setup}
+#| message: false
+#| warning: false
+
+options(scipen = 999)
+
+if(!require(pacman)){install.packages("pacman"); library(pacman, quietly = T)}
+p_load(tidyverse, sf, lwgeom, viridis, lubridate)
+```
+
+## File List
+
+```{r list-files}
+ais_files <- tibble(
+  path = c(
+    list.files("AIS/2024", pattern = "^AIS_2024\\.\\d{2}\\.csv$", full.names = TRUE),
+    list.files("AIS/2025", pattern = "^AIS_2025\\.\\d{2}\\.csv$", full.names = TRUE)
+  )
+)
+
+ais_files
+```
+
+## Load Shared Fishnet and Landing Buffers
+
+```{r load-spatial}
+fishnet <- st_read("../hex_grid_100m.geojson") %>%
+  st_transform(32118) %>%
+  mutate(grid_id = row_number())
+
+landings <- st_read("../../GeoJSONs/landings.geojson") %>%
+  st_transform(32118)
+
+# Union of all 500m stop buffers — used to punch out stop areas from segment corridors
+landing_buffers_union <- landings %>%
+  distinct(stop_id, .keep_all = TRUE) %>%
+  st_buffer(dist = 500) %>%
+  st_union()
+```
+
+## Load and Prepare Route Segments
+
+```{r load-segments}
+# Route name lookup from GTFS shapes
+route_names <- st_read("../../GeoJSONs/routes.geojson") %>%
+  st_drop_geometry() %>%
+  distinct(route_id, route_name = long_name)
+
+# Stop name lookup
+stop_lookup <- landings %>%
+  st_drop_geometry() %>%
+  distinct(stop_id, stop_name)
+
+# Segments: filter to LineStrings only (Points in the file are stop markers)
+segments_raw <- st_read("../new_routes_segmentation.geojson") %>%
+  filter(st_geometry_type(.) == "LINESTRING") %>%
+  st_transform(32118)
+
+# Infer NB/SB direction per shape from the net latitude change of the full shape.
+# We union all segments of a shape, transform to WGS84, then compare start vs end lat.
+shape_direction <- segments_raw %>%
+  group_by(shape_id) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop") %>%
+  st_transform(4326) %>%
+  rowwise() %>%
+  mutate(
+    coords    = list(st_coordinates(geometry)),
+    start_lat = coords[1, "Y"],
+    end_lat   = coords[nrow(coords), "Y"],
+    direction = if_else(end_lat > start_lat, "NB", "SB")
+  ) %>%
+  ungroup() %>%
+  st_drop_geometry() %>%
+  select(shape_id, direction)
+
+# Assemble full segment table with names and direction
+segments <- segments_raw %>%
+  left_join(route_names,  by = "route_id") %>%
+  left_join(stop_lookup,  by = c("from_stop_id" = "stop_id")) %>%
+  rename(from_stop_name = stop_name) %>%
+  left_join(stop_lookup,  by = c("to_stop_id" = "stop_id")) %>%
+  rename(to_stop_name = stop_name) %>%
+  left_join(shape_direction, by = "shape_id") %>%
+  mutate(
+    segment_id = paste(route_id, shape_id, from_stop_id, to_stop_id, sep = "_")
+  )
+
+glimpse(segments)
+n_distinct(segments$segment_id)
+```
+
+## Build Segment Corridor Buffers (250m, Stop Areas Excluded)
+
+```{r segment-buffers}
+# 250m buffer around each segment LineString
+segment_buffers <- segments %>%
+  st_buffer(dist = 250)
+
+# Subtract 500m landing buffers element-wise.
+# st_difference.sf filters to only intersecting pairs, so applying it to the whole
+# sf at once drops segments that don't overlap a stop. We apply it per-geometry
+# via lapply so all 113 rows are preserved — non-overlapping segments keep their
+# full buffer unchanged.
+masked_geoms <- lapply(st_geometry(segment_buffers), function(g) {
+  result <- st_difference(st_sfc(g, crs = 32118), landing_buffers_union)
+  if (length(result) == 0 || st_is_empty(result[[1]])) g else result[[1]]
+})
+
+segment_buffers_masked <- segment_buffers
+st_geometry(segment_buffers_masked) <- do.call(st_sfc, c(masked_geoms, list(crs = 32118)))
+
+# st_difference on touching edges can produce GEOMETRYCOLLECTION; extract polygons.
+segment_buffers_masked <- segment_buffers_masked %>%
+  filter(!st_is_empty(geometry)) %>%
+  mutate(geometry = st_collection_extract(geometry, "POLYGON"))
+
+# Map fishnet cells to segment corridors
+segment_cells <- fishnet %>%
+  st_join(segment_buffers_masked %>% select(segment_id)) %>%
+  filter(!is.na(segment_id)) %>%
+  st_drop_geometry() %>%
+  select(grid_id, segment_id)
+
+glimpse(segment_cells)
+n_distinct(segment_cells$segment_id)
+```
+
+## AIS Processing Pipeline
+
+```{r process-function}
+# Mirrors the stop-level pipeline in ais-feature-engineering.qmd, but joins to
+# segment_cells instead of landing_cells.
+process_segments <- function(file_path) {
+  message("Processing: ", file_path)
+
+  read.csv(file_path) %>%
+    rename_with(tolower) %>%
+    rename(
+      base_date_time = any_of("basedatetime"),
+      latitude       = any_of("lat"),
+      longitude      = any_of("lon")
+    ) %>%
+    mutate(
+      base_date_time = ymd_hms(base_date_time, quiet = TRUE),
+      date           = as.Date(base_date_time),
+      hour           = hour(base_date_time)
+    ) %>%
+    filter(sog > 0.5) %>%
+    drop_na(longitude, latitude, date, hour) %>%
+    st_as_sf(coords = c("longitude", "latitude"), crs = 4326) %>%
+    st_transform(32118) %>%
+    st_join(fishnet) %>%
+    st_drop_geometry() %>%
+    filter(!is.na(grid_id)) %>%
+    group_by(grid_id, date, hour) %>%
+    summarise(vessel_count = n_distinct(mmsi), .groups = "drop") %>%
+    inner_join(segment_cells, by = "grid_id") %>%
+    group_by(segment_id, date, hour) %>%
+    summarise(vessel_count = sum(vessel_count), .groups = "drop")
+}
+```
+
+## Process All AIS Files
+
+Appends to `AIS_segment_features.csv` one month at a time, skipping months already
+on disk so the run is resumable.
+
+```{r process-all}
+output_path <- "AIS_segment_features.csv"
+
+already_processed <- if (file.exists(output_path)) {
+  read.csv(output_path) %>%
+    pull(date) %>%
+    as.Date() %>%
+    format("%Y-%m") %>%
+    unique()
+} else {
+  character(0)
+}
+
+ais_files %>%
+  pull(path) %>%
+  walk(function(f) {
+    file_month <- str_extract(f, "\\d{4}\\.\\d{2}") %>%
+      str_replace("\\.", "-")
+
+    if (file_month %in% already_processed) {
+      message("Skipping already processed: ", f)
+      return(invisible(NULL))
+    }
+
+    result <- process_segments(f)
+
+    if (!file.exists(output_path)) {
+      write.csv(result, output_path, row.names = FALSE)
+    } else {
+      write.table(result, output_path, sep = ",",
+                  row.names = FALSE, col.names = FALSE, append = TRUE)
+    }
+
+    message("Completed: ", f)
+  })
+
+message("All files processed. Output saved to: ", output_path)
+```
+
+```{r sanity-check}
+segment_features <- read.csv("AIS_segment_features.csv") %>%
+  mutate(date = as.Date(date))
+
+glimpse(segment_features)
+nrow(segment_features)
+n_distinct(segment_features$segment_id)
+range(segment_features$date)
+```
+
+## Zero-Fill Missing Hours
+
+Observed-only rows leave gaps where no vessel crossed a segment in a given hour.
+We complete the panel with zeros for those hours.
+
+```{r zero-fill}
+complete_panel <- segment_features %>%
+  distinct(segment_id) %>%
+  cross_join(
+    segment_features %>%
+      distinct(date) %>%
+      cross_join(tibble(hour = 0:23))
+  )
+
+segment_features_complete <- complete_panel %>%
+  left_join(segment_features, by = c("segment_id", "date", "hour")) %>%
+  mutate(vessel_count = replace_na(vessel_count, 0))
+
+nrow(segment_features_complete)
+summary(segment_features_complete$vessel_count)
+
+write.csv(segment_features_complete, "AIS_segment_features.csv", row.names = FALSE)
+```
+
+## Historical Averages
+
+Averages by segment, direction, schedule season/daytype, day of week, and hour.
+`direction_id` (0/1 from GTFS) and the computed `direction` (NB/SB) are both
+included so this output can join to either GTFS trip keys or the direction label.
+
+```{r historical-averages}
+date_lookup <- read.csv("date_lookup.csv") %>%
+  mutate(date = as.Date(date))
+
+# Non-spatial segment metadata for joining onto the averages table
+segment_meta <- segments %>%
+  st_drop_geometry() %>%
+  select(segment_id, route_id, route_name, shape_id,
+         direction_id, direction,
+         from_stop_id, from_stop_name,
+         to_stop_id,   to_stop_name)
+
+route_historical_averages <- segment_features_complete %>%
+  left_join(date_lookup,    by = "date") %>%
+  mutate(day_of_week = wday(date, label = TRUE)) %>%
+  left_join(segment_meta,   by = "segment_id") %>%
+  group_by(
+    route_id, route_name, shape_id,
+    direction_id, direction,
+    from_stop_id, from_stop_name,
+    to_stop_id,   to_stop_name,
+    schedule_season, schedule_daytype, day_of_week, hour
+  ) %>%
+  summarise(
+    avg_vessel_count    = mean(vessel_count),
+    median_vessel_count = median(vessel_count),
+    sd_vessel_count     = sd(vessel_count),
+    .groups = "drop"
+  )
+
+glimpse(route_historical_averages)
+nrow(route_historical_averages)
+
+write.csv(route_historical_averages, "AIS_route_historical_averages.csv", row.names = FALSE)
+```
+
+## Visualization
+
+Quick sanity check — average hourly corridor traffic for a few segments on the
+East River route, separated by direction.
+
+```{r viz}
+er_segments <- route_historical_averages %>%
+  filter(route_id == "ER") %>%
+  mutate(
+    segment_label = paste(from_stop_name, "→", to_stop_name),
+    direction     = factor(direction, levels = c("NB", "SB"))
+  )
+
+er_segments %>%
+  filter(schedule_season == "FALL", schedule_daytype == "WEEKDAY") %>%
+  ggplot(aes(x = hour, y = avg_vessel_count, color = segment_label)) +
+  geom_line() +
+  facet_wrap(~direction, nrow = 1) +
+  labs(
+    title    = "Average Corridor Traffic — East River Route",
+    subtitle = "FALL weekdays, by segment and direction",
+    x        = "Hour of Day",
+    y        = "Average Unique Vessels",
+    color    = "Segment"
+  ) +
+  scale_color_viridis_d(option = "turbo") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
