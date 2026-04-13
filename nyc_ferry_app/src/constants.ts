@@ -7,8 +7,8 @@ export const FERRY_ROUTE_COLORS: Record<string, string> = {
   GOV: '#9893A0',
 }
 
-export const MAP_CENTER: [number, number] = [-74.006, 40.7128]
-export const MAP_DEFAULT_ZOOM = 11
+export const MAP_CENTER: [number, number] = [-74.003, 40.6850]
+export const MAP_DEFAULT_ZOOM = 10.5
 export const CARTO_DARK_STYLE = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json'
 
 export const FERRY_ROUTES = ['ER', 'SBK', 'AST', 'RWS', 'STG', 'GOV'] as const
