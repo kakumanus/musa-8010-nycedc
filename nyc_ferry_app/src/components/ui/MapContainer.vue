@@ -1,45 +1,5 @@
 <template>
   <div ref="mapEl" class="absolute inset-0 w-full h-full" />
-
-  <!-- search overlay -->
-  <div class="absolute top-4 left-4 z-10 w-64">
-    <div class="relative">
-      <input
-        v-model="search"
-        type="text"
-        placeholder="Search routes..."
-        class="w-full px-3 py-2 bg-white rounded shadow text-sm"
-        @focus="showDropdown = true"
-      />
-      <ul
-        v-if="showDropdown && filteredRoutes.length"
-        class="absolute w-full mt-1 bg-white rounded shadow max-h-48 overflow-y-auto text-sm z-20"
-      >
-        <li
-          v-for="route in filteredRoutes"
-          :key="route"
-          class="px-3 py-2 cursor-pointer hover:bg-gray-100"
-          :class="{ 'bg-blue-50 font-medium': selectedRoutes.includes(route) }"
-          @click="toggleRoute(route)"
-        >
-          {{ route }}
-        </li>
-      </ul>
-    </div>
-
-    <!-- selected tags -->
-    <div class="flex flex-wrap gap-1 mt-2">
-      <span
-        v-for="route in selectedRoutes"
-        :key="route"
-        class="flex items-center gap-1 px-2 py-1 bg-white rounded text-xs shadow"
-      >
-        {{ route }}
-        <button @click="toggleRoute(route)">✕</button>
-      </span>
-    </div>
-  </div>
-
   <!-- reset view button -->
   <button
     class="absolute top-2.5 right-12 z-10 bg-white rounded shadow px-2 py-1 text-xs font-medium text-gray-700 hover:bg-gray-100"
