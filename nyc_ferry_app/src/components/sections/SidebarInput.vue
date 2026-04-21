@@ -25,7 +25,7 @@
         <input
           v-model="routeSearch"
           type="text"
-          placeholder="Search routes..."
+          placeholder="All Routes"
           class="bg-white/10 border border-white/20 rounded px-3 py-2 text-sm text-white placeholder-ferry-cool-gray focus:outline-none focus:border-ferry-light-blue"
           @focus="showRouteList = true"
           @blur="showRouteList = false"
@@ -70,6 +70,36 @@
         </div>
       </div>
 
+      <!-- Direction selector -->
+      <div class="flex flex-col gap-1">
+        <label class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">
+          Direction
+        </label>
+        <div class="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            class="py-2 rounded text-sm font-heading uppercase tracking-wider transition-colors border"
+            :class="form.direction === 'NB'
+              ? 'bg-ferry-light-blue text-ferry-dark-blue border-ferry-light-blue font-semibold'
+              : 'bg-white/5 text-ferry-light-gray border-white/20 hover:text-white hover:border-white/40'"
+            @click="form.direction = 'NB'"
+          >
+            Northbound
+          </button>
+          <button
+            type="button"
+            class="py-2 rounded text-sm font-heading uppercase tracking-wider transition-colors border"
+            :class="form.direction === 'SB'
+              ? 'bg-ferry-light-blue text-ferry-dark-blue border-ferry-light-blue font-semibold'
+              : 'bg-white/5 text-ferry-light-gray border-white/20 hover:text-white hover:border-white/40'"
+            @click="form.direction = 'SB'"
+          >
+            Southbound
+          </button>
+        </div>
+        <p v-if="errors.direction" class="text-xs text-red-400 mt-0.5">{{ errors.direction }}</p>
+      </div>
+
       <!-- Date picker -->
       <div class="flex flex-col gap-1">
         <label class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">
@@ -97,7 +127,7 @@
           <input
             v-model.number="form.temp"
             type="number"
-            placeholder="72"
+            placeholder="0"
             class="bg-white/10 border border-white/20 rounded px-3 py-2 text-sm text-white placeholder-ferry-cool-gray focus:outline-none focus:border-ferry-light-blue"
             :class="{ 'border-red-400': errors.temp }"
           />
@@ -112,7 +142,7 @@
             type="number"
             min="0"
             max="100"
-            placeholder="10"
+            placeholder="0"
             class="bg-white/10 border border-white/20 rounded px-3 py-2 text-sm text-white placeholder-ferry-cool-gray focus:outline-none focus:border-ferry-light-blue"
             :class="{ 'border-red-400': errors.precip }"
           />
@@ -149,13 +179,20 @@ import { ref, computed, watch } from 'vue'
 const props = defineProps<{
   selectedRoutes?: string[]
   allRoutes?: string[]
-  savedForm?: { date: string; temp: number | null; precip: number | null }
+  savedForm?: { date: string; temp: number | null; precip: number | null; direction: string }
 }>()
 
 const emit = defineEmits<{
-  submit: [values: { route: string; routes: string[]; date: string; temp: number | null; precip: number | null }]
+  submit: [values: {
+    route: string
+    routes: string[]
+    date: string
+    temp: number | null
+    precip: number | null
+    direction: string
+  }]
   'update:selectedRoutes': [routes: string[]]
-  'update:savedForm': [form: { date: string; temp: number | null; precip: number | null }]
+  'update:savedForm': [form: { date: string; temp: number | null; precip: number | null; direction: string }]
 }>()
 
 const routeSearch = ref('')
@@ -194,9 +231,10 @@ const form = ref({
   date: props.savedForm?.date ?? '',
   temp: props.savedForm?.temp ?? null as number | null,
   precip: props.savedForm?.precip ?? null as number | null,
+  direction: props.savedForm?.direction ?? 'NB',
 })
 
-const errors = ref({ date: '', temp: '', precip: '' })
+const errors = ref({ date: '', temp: '', precip: '', direction: '' })
 
 watch(form, (val) => {
   emit('update:savedForm', { ...val })
@@ -217,11 +255,12 @@ function formatDate(e: Event) {
 }
 
 function handleSubmit() {
-  errors.value = { date: '', temp: '', precip: '' }
+  errors.value = { date: '', temp: '', precip: '', direction: '' }
 
   if (!form.value.date || form.value.date.length < 10) errors.value.date = 'Required'
   if (form.value.temp === null || form.value.temp === undefined) errors.value.temp = 'Required'
   if (form.value.precip === null || form.value.precip === undefined) errors.value.precip = 'Required'
+  if (!form.value.direction) errors.value.direction = 'Required'
 
   if (Object.values(errors.value).some(e => e)) return
 
@@ -231,6 +270,7 @@ function handleSubmit() {
     date: form.value.date,
     temp: form.value.temp,
     precip: form.value.precip,
+    direction: form.value.direction,
   })
 }
 </script>
