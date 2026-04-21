@@ -1,0 +1,653 @@
+---
+title: "Associative Model: Grouped Explanatory Framework"
+output: html_document
+author: "Project Team"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+options(scipen = 999, dplyr.summarise.inform = FALSE)
+```
+
+```{r packages}
+required_pkgs <- c("dplyr", "tidyr", "arrow", "broom", "knitr", "readr")
+missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
+if (length(missing_pkgs) > 0) stop("Missing packages: ", paste(missing_pkgs, collapse = ", "))
+
+library(dplyr)
+library(tidyr)
+library(arrow)
+library(broom)
+library(knitr)
+library(readr)
+library(car)
+library(ggplot2)
+```
+
+## 1) Associative Model Objective and Design
+
+This section presents the associative model used to explain stop-level arrival delay. The goal of this model is interpretation rather than advance prediction: we use it to assess how delay is associated with structural, environmental, temporal, operational, and vessel-related factors.
+
+The dependent variable is stop-level arrival lateness in minutes relative to the original schedule. Predictors are organized into five explanatory domains: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics. This grouped specification allows the associative model to compare how different domains contribute to observed delay variation while preserving a single coherent modeling framework.
+
+Model preparation steps, including variable screening, imputation, and final specification, are described in the following sections.
+
+```{r settings}
+set.seed(7900)
+
+input_parquet <- "E:/MUSA/8010practicum/outputs/direct_pipeline_final_20260327/baseline_modeling_table_final_direct.parquet"
+output_dir <- "E:/MUSA/8010practicum/outputs/direct_pipeline_final_20260327/associative_baseline_models_20260404"
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+outcome_cont <- "lateness_vs_original_schedule_min"
+
+
+# Weekly local-time-slot imputation:
+# interpreted as a 7-day centered window (±3 days) by local trip date.
+week_window_days <- 3
+
+candidate_predictors <- c(
+  "route_id", "direction", "stop_sequence", "prev_stop_sched_hour", "prev_stop_sched_hour_group",
+  "schedule_season", "schedule_daytype", "vessel_trip_seq_in_chain", "vessel_capacity",
+  "is_terminal_stop", "prev_stop_shared_stop_flag", "curr_stop_shared_stop_flag",
+  "planned_turnaround_gap_min", "scheduled_headway_min", "expected_water_min",
+  "prev_stop_sequence", "prev_stop_boardings", "prev_stop_alightings", "prev_stop_onboard",
+  "prev_stop_load_factor", "env_temperature_c", "env_wind_speed_mps", "env_visibility_m",
+  "env_precipitation_mm", "env_battery_water_level_anomaly", "env_narrows_current_residual",
+  "env_battery_water_level_obs", "env_narrows_current_obs"
+)
+prior_delay_predictors <- c("inherited_prev_trip_delay", "carried_within_trip_delay")
+```
+
+## 2) Outcome, Unit of Analysis, and Data Scope
+
+The associative model uses the stop-level baseline modeling table as its input dataset. The unit of analysis is a stop-level observation, and the dependent variable is arrival lateness in minutes relative to the original schedule.
+
+The predictor set is structured to capture multiple dimensions of delay association within a single modeling framework. Variables are organized into five explanatory domains: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics. Together, these domains define the scope of the associative model and provide the basis for later specification and estimation.
+
+```{r load, include=FALSE}
+if (!file.exists(input_parquet)) stop("Missing input parquet: ", input_parquet)
+df_raw <- read_parquet(input_parquet) %>% as_tibble()
+
+df <- df_raw %>%
+  mutate(
+    trip_date = as.Date(substr(as.character(trip_key), 1, 8), format = "%Y%m%d")
+  )
+
+predictors_no_prior <- intersect(candidate_predictors, names(df))
+predictors_with_prior <- unique(c(predictors_no_prior, intersect(prior_delay_predictors, names(df))))
+
+tibble(
+  input_rows = nrow(df_raw),
+  rows_after_load = nrow(df),
+  predictors_no_prior_n = length(predictors_no_prior),
+  predictors_with_prior_n = length(predictors_with_prior)
+) %>% kable(caption = "Data Scope and Predictor Availability")
+```
+The full predictor pool was organized into five explanatory domains: structural context (such as route and stop configuration), environmental conditions, temporal patterns, operational propagation, and vessel characteristics.
+
+## 3) Predictor Domains
+
+To support interpretation, predictors in the associative model were organized into five explanatory domains. This grouped structure separates baseline route and stop context from environmental conditions, temporal patterns, operational propagation, and vessel-related characteristics. The goal is to interpret delay association at the domain level rather than focusing only on isolated individual coefficients.
+
+### 3.1 Domain A: Structural Context
+
+The structural domain captures baseline differences in how delay varies across the ferry network. These predictors describe route, stop position, and stop-context features that reflect how service is organized spatially and operationally. Variables in this domain include route and direction identifiers, stop sequence, terminal status, and shared-stop context. We interpret this domain as representing the structural baseline of delay rather than short-term changing conditions.
+
+### 3.2 Domain B: Environmental Conditions
+
+The environmental domain captures external natural conditions that may affect vessel movement and docking performance. These predictors include weather and water-related variables such as temperature, wind speed, visibility, precipitation, water-level, and current-related measures. This domain is especially important for the client because it helps distinguish external operating conditions from delay that is simply inherited from earlier parts of the trip.
+
+### 3.3 Domain C: Temporal Patterns
+
+The temporal domain captures recurring calendar and time-of-day structure in delay. These predictors describe when service occurs rather than where it occurs or what the vessel has already experienced. Variables in this domain include scheduled hour, scheduled hour group, day type, and season. We use this domain to represent regular service rhythms such as weekday versus weekend patterns, seasonal demand differences, and time-of-day effects.
+
+### 3.4 Domain D: Operational Propagation
+
+The operational propagation domain captures delay carried forward through the operating chain. These predictors reflect whether lateness has already accumulated earlier in the trip or in a prior linked trip on the same vessel. Variables in this domain include inherited previous-trip delay and carried within-trip delay. This domain is operationally meaningful, but it is interpreted as one component of the associative model rather than the sole basis for explaining delay.
+
+### 3.5 Domain E: Vessel Characteristics
+
+The vessel domain captures systematic differences associated with vessel capacity and operating role. These predictors help assess whether some delay patterns are associated with the characteristics of the vessel being used rather than only with route structure or environmental conditions. Variables in this domain include vessel capacity and related vessel-level operational identifiers retained in the final specification.
+
+
+## 4) Data Preparation
+This section summarizes the data preparation steps used before model estimation. These steps were intended to preserve a usable stop-level modeling table while keeping the final associative model interpretable. Preparation focused on variable construction, treatment of missing AIS and environmental fields, and a small set of reusable modeling utilities used later in the analysis.
+
+### 4.1 Data Cleaning and Variable Construction
+The stop-level modeling table was standardized before estimation so that the associative model could be fit on a consistent analytic dataset. This preparation included defining the trip date field used in time-based processing, confirming the availability of candidate predictors in the loaded table, and retaining only variables relevant to the associative model outcome and explanatory domains.
+
+### 4.2 AIS and Environmental Variable Imputation
+
+Missing values in AIS and environmental variables were imputed using a local time-slot rolling rule. The primary fill used observations from the same scheduled hour within a centered seven-day window around the trip date. When no such value was available, the procedure fell back to the same scheduled hour group within the same centered window.
+
+This approach was designed to retain environmental predictors that would otherwise be lost through complete-case filtering, while still using temporally local information tied to comparable operating periods.
+
+```{r impute, include=FALSE}
+build_week_fill_map <- function(day_slot_tbl, group_col, date_col = "trip_date", value_col = "slot_day_median", window_days = 3) {
+  if (nrow(day_slot_tbl) == 0) return(tibble())
+  split_tbl <- split(day_slot_tbl, day_slot_tbl[[group_col]], drop = TRUE)
+  out <- lapply(split_tbl, function(gdf) {
+    gdf <- gdf[order(gdf[[date_col]]), , drop = FALSE]
+    d <- gdf[[date_col]]
+    v <- gdf[[value_col]]
+    week_fill <- vapply(seq_along(v), function(i) {
+      idx <- abs(as.integer(d - d[i])) <= window_days
+      val <- suppressWarnings(median(v[idx], na.rm = TRUE))
+      ifelse(is.finite(val), val, NA_real_)
+    }, numeric(1))
+    gdf$week_fill <- week_fill
+    gdf[, c(group_col, date_col, "week_fill"), drop = FALSE]
+  })
+  bind_rows(out)
+}
+
+impute_by_local_slot_week <- function(data, var_name, window_days = 3) {
+  x <- data
+  miss_before <- sum(is.na(x[[var_name]]))
+  if (miss_before == 0) {
+    return(list(data = x, summary = tibble(variable = var_name, n_missing_before = 0L, n_filled_primary = 0L, n_filled_fallback = 0L, n_missing_after = 0L)))
+  }
+
+  # Primary: same local hour within centered 7-day window (±3 days by default).
+  primary_daily <- x %>%
+    filter(!is.na(.data[[var_name]]), !is.na(trip_date), !is.na(prev_stop_sched_hour)) %>%
+    group_by(prev_stop_sched_hour, trip_date) %>%
+    summarise(slot_day_median = median(.data[[var_name]], na.rm = TRUE), .groups = "drop")
+  primary_fill <- build_week_fill_map(primary_daily, group_col = "prev_stop_sched_hour", value_col = "slot_day_median", window_days = window_days) %>%
+    rename(fill_primary = week_fill)
+
+  # Fallback: same local hour-group within centered 7-day window.
+  fallback_daily <- x %>%
+    filter(!is.na(.data[[var_name]]), !is.na(trip_date), !is.na(prev_stop_sched_hour_group)) %>%
+    group_by(prev_stop_sched_hour_group, trip_date) %>%
+    summarise(slot_day_median = median(.data[[var_name]], na.rm = TRUE), .groups = "drop")
+  fallback_fill <- build_week_fill_map(fallback_daily, group_col = "prev_stop_sched_hour_group", value_col = "slot_day_median", window_days = window_days) %>%
+    rename(fill_fallback = week_fill)
+
+  x <- x %>%
+    left_join(primary_fill, by = c("prev_stop_sched_hour", "trip_date")) %>%
+    left_join(fallback_fill, by = c("prev_stop_sched_hour_group", "trip_date"))
+
+  was_missing <- is.na(x[[var_name]])
+  fill_primary_idx <- was_missing & !is.na(x$fill_primary)
+  fill_fallback_idx <- was_missing & is.na(x$fill_primary) & !is.na(x$fill_fallback)
+
+  x[[var_name]][fill_primary_idx] <- x$fill_primary[fill_primary_idx]
+  x[[var_name]][fill_fallback_idx] <- x$fill_fallback[fill_fallback_idx]
+  x <- x %>% select(-fill_primary, -fill_fallback)
+
+  list(
+    data = x,
+    summary = tibble(
+      variable = var_name,
+      n_missing_before = miss_before,
+      n_filled_primary = sum(fill_primary_idx, na.rm = TRUE),
+      n_filled_fallback = sum(fill_fallback_idx, na.rm = TRUE),
+      n_missing_after = sum(is.na(x[[var_name]]))
+    )
+  )
+}
+
+impute_vars <- intersect(
+  c(
+    "env_temperature_c",
+    "env_wind_speed_mps",
+    "env_visibility_m",
+    "env_precipitation_mm",
+    "env_narrows_current_residual",
+    "env_battery_water_level_obs",
+    "env_narrows_current_obs"
+  ),
+  names(df)
+)
+
+impute_summary_list <- list()
+df_imp <- df
+for (v in impute_vars) {
+  res <- impute_by_local_slot_week(df_imp, v, window_days = week_window_days)
+  df_imp <- res$data
+  impute_summary_list[[length(impute_summary_list) + 1]] <- res$summary
+}
+imputation_summary <- bind_rows(impute_summary_list)
+```
+
+### 4.3 Modeling Utilities
+
+A small set of helper functions was defined to standardize model input preparation, linear-model fitting, and summary extraction across the associative model workflow.
+
+```{r helpers, include=FALSE}
+prepare_model_df <- function(data, outcome, predictors) {
+  data %>% select(all_of(c(outcome, predictors))) %>% drop_na()
+}
+
+fit_linear <- function(data, model_name, outcome, predictors) {
+  d <- prepare_model_df(data, outcome, predictors)
+  fml <- as.formula(paste(outcome, "~", paste(predictors, collapse = " + ")))
+  fit <- lm(fml, data = d)
+  pred <- predict(fit, newdata = d)
+  rmse <- sqrt(mean((d[[outcome]] - pred)^2))
+  g <- glance(fit)
+
+  list(
+    metrics = tibble(
+      model_name = model_name,
+      model_type = "linear",
+      n = nrow(d),
+      aic = g$AIC,
+      bic = g$BIC,
+      rsq = g$r.squared,
+      adj_rsq = g$adj.r.squared,
+      rmse = rmse,
+      pseudo_rsq = NA_real_,
+      accuracy = NA_real_,
+      sensitivity = NA_real_,
+      specificity = NA_real_,
+      auc = NA_real_
+    ),
+    coefs = tidy(fit) %>% mutate(model_name = model_name, model_type = "linear"),
+    formula_text = paste(deparse(fml), collapse = "")
+  )
+}
+
+```
+
+```{r standardized_helpers, include=FALSE}
+standardize_for_lm <- function(data, outcome, predictors) {
+  d <- data %>%
+    select(all_of(c(outcome, predictors))) %>%
+    drop_na()
+
+  num_vars <- names(d)[sapply(d, is.numeric)]
+
+  d_std <- d %>%
+    mutate(across(all_of(num_vars), ~ as.numeric(scale(.x))))
+
+  d_std
+}
+
+fit_standardized_linear <- function(data, model_name, outcome, predictors) {
+  d_std <- standardize_for_lm(data, outcome, predictors)
+  fml <- as.formula(paste(outcome, "~", paste(predictors, collapse = " + ")))
+  fit <- lm(fml, data = d_std)
+
+  broom::tidy(fit) %>%
+    filter(term != "(Intercept)") %>%
+    mutate(
+      model_name = model_name,
+      abs_estimate = abs(estimate)
+    ) %>%
+    arrange(desc(abs_estimate))
+}
+```
+
+
+## 5) Variable Screening and Final Specification
+
+This section documents how the final associative-model specification was defined from the broader predictor pool. Screening focused on preserving interpretable coverage across the five explanatory domains while reducing redundancy among closely related measures. Rather than maximizing the number of included variables, the goal was to retain a smaller specification that remained substantively meaningful and statistically stable.
+
+### 5.1 Initial Candidate Variables
+
+The initial predictor pool was intentionally broad so that each explanatory domain would be represented in the associative model. Candidate variables included route and stop structure, environmental conditions, temporal indicators, operational propagation terms, and vessel-related characteristics. This broader pool provided the starting point for defining a final specification that remained domain-complete but more interpretable.
+```{r}
+domain_a_predictors <- intersect(c(
+  "route_id",
+  "direction",
+  "stop_sequence",
+  "is_terminal_stop",
+  "prev_stop_shared_stop_flag",
+  "curr_stop_shared_stop_flag"
+), names(df_imp))
+
+domain_b_predictors <- intersect(c(
+  "env_temperature_c",
+  "env_wind_speed_mps",
+  "env_visibility_m",
+  "env_precipitation_mm",
+  "env_narrows_current_residual",
+  "env_battery_water_level_obs",
+  "env_narrows_current_obs"
+), names(df_imp))
+
+domain_c_predictors <- intersect(c(
+  "prev_stop_sched_hour",
+  "schedule_season",
+  "schedule_daytype"
+), names(df_imp))
+
+domain_d_predictors <- intersect(c(
+  "inherited_prev_trip_delay",
+  "carried_within_trip_delay"
+), names(df_imp))
+
+domain_e_predictors <- intersect(c(
+  "vessel_capacity",
+  "vessel_trip_seq_in_chain"
+), names(df_imp))
+
+final_predictors <- unique(c(
+  domain_a_predictors,
+  domain_b_predictors,
+  domain_c_predictors,
+  domain_d_predictors,
+  domain_e_predictors
+))
+```
+### 5.2 Redundancy and Multicollinearity Checks
+
+Because several candidate predictors measured closely related aspects of stop position, ridership, and operating context, we reviewed pairwise correlations among numeric predictors before fitting the final associative model. The goal was not to eliminate all correlation, but to identify clusters of variables that conveyed largely overlapping information and would make coefficient interpretation less clear.
+
+
+```{r corr_setup}
+numeric_candidate_predictors <- intersect(
+  candidate_predictors,
+  names(df_imp)[sapply(df_imp, is.numeric)]
+)
+
+corr_vars <- df_imp %>%
+  select(all_of(numeric_candidate_predictors)) %>%
+  select(where(~ !all(is.na(.))))
+
+corr_matrix <- cor(corr_vars, use = "pairwise.complete.obs")
+```
+The figure below highlights a subset of strongly related variables that were reviewed during specification design.
+```{r corr_plot_focus, fig.width=6, fig.height=5}
+focus_vars <- c(
+  "stop_sequence",
+  "prev_stop_sequence",
+  "prev_stop_onboard",
+  "prev_stop_load_factor"
+)
+
+
+focus_corr <- corr_matrix[focus_vars, focus_vars]
+
+focus_plot_df <- as.data.frame(as.table(focus_corr)) %>%
+  rename(var1 = Var1, var2 = Var2, corr = Freq) %>%
+  mutate(label = ifelse(var1 == var2, "", sprintf("%.2f", corr)))
+
+focus_plot <- ggplot(focus_plot_df, aes(x = var1, y = var2, fill = corr)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = label), size = 4) +
+  scale_fill_gradient2(
+    low = "#1A9988", mid = "white", high = "#EB5600",
+    midpoint = 0,
+    limits = c(-1, 1)
+  ) +
+  coord_fixed() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5)
+  ) +
+  labs(
+    title = "Correlation Among Selected Candidate Predictors",
+    x = NULL,
+    y = NULL,
+    fill = "Correlation"
+  )
+
+focus_plot
+```
+To support specification decisions more systematically, we also identified highly correlated numeric predictor pairs using an absolute correlation threshold of 0.7.
+```{r corr_pairs}
+corr_pairs <- as.data.frame(as.table(corr_matrix)) %>%
+  rename(var1 = Var1, var2 = Var2, corr = Freq) %>%
+  filter(var1 != var2) %>%
+  mutate(abs_corr = abs(corr)) %>%
+  filter(abs_corr >= 0.7) %>%
+  rowwise() %>%
+  mutate(pair_id = paste(sort(c(var1, var2)), collapse = " || ")) %>%
+  ungroup() %>%
+  distinct(pair_id, .keep_all = TRUE) %>%
+  arrange(desc(abs_corr)) %>%
+  select(var1, var2, corr, abs_corr)
+
+corr_pairs %>%
+  head(20) %>%
+  kable(caption = "Highly correlated candidate predictor pairs (|r| >= 0.7)")
+```
+### 5.3 Final Variable Set
+
+The final variable set was selected to preserve coverage across the five explanatory domains while avoiding unnecessary duplication among closely related measures. When multiple predictors represented similar underlying information, we prioritized variables that were easier to interpret operationally or that provided a clearer link to the domain being represented. The result is a reduced final specification intended to support stable estimation and clearer domain-level interpretation in the associative model.
+```{r vif_setup}
+final_predictors_trimmed <- setdiff(
+  final_predictors,
+  c("prev_stop_sequence", "prev_stop_load_factor", "prev_stop_sched_hour_group")
+)
+
+tibble(
+  model = "Final combined associative model",
+  n_predictors = length(final_predictors_trimmed)
+) %>%
+  kable(caption = "Predictor count in the final combined associative specification")
+```
+```{r vif_run}
+fit_vif_model <- function(data, outcome, predictors) {
+  vars_needed <- unique(c(outcome, predictors))
+  model_df <- data %>%
+    select(all_of(vars_needed)) %>%
+    drop_na()
+
+  formula_str <- paste(outcome, "~", paste(predictors, collapse = " + "))
+  lm(as.formula(formula_str), data = model_df)
+}
+
+extract_vif_table <- function(model, model_name) {
+  vif_vals <- car::vif(model)
+
+  if (is.matrix(vif_vals)) {
+    out <- as.data.frame(vif_vals)
+    out$term <- rownames(out)
+    rownames(out) <- NULL
+    out$model <- model_name
+    out %>%
+      rename(gvif = GVIF) %>%
+      mutate(adjusted_vif = gvif^(1 / (2 * Df))) %>%
+      select(model, term, Df, gvif, adjusted_vif)
+  } else {
+    tibble(
+      model = model_name,
+      term = names(vif_vals),
+      vif = as.numeric(vif_vals)
+    ) %>%
+      arrange(desc(vif))
+  }
+}
+
+vif_model_final <- fit_vif_model(df_imp, outcome_cont, final_predictors_trimmed)
+vif_table_final <- extract_vif_table(vif_model_final, "Final combined associative model")
+```
+
+```{r vif_table}
+if ("adjusted_vif" %in% names(vif_table_final)) {
+  vif_table_final %>%
+    arrange(desc(adjusted_vif)) %>%
+    head(20) %>%
+    mutate(
+      gvif = round(gvif, 2),
+      adjusted_vif = round(adjusted_vif, 2)
+    ) %>%
+    kable(caption = "Top VIF results for the final combined associative specification")
+} else {
+  vif_table_final %>%
+    arrange(desc(vif)) %>%
+    head(20) %>%
+    mutate(vif = round(vif, 2)) %>%
+    kable(caption = "Top VIF results for the final combined associative specification")
+}
+```
+
+
+## 6) Estimation Strategy
+The associative model was estimated in two parts. First, we fit domain-specific linear models to evaluate how much stop-level delay variation was associated with each explanatory domain on its own. Second, we fit a combined associative model that included predictors from all five domains simultaneously. This strategy allows the analysis to distinguish domain-level explanatory contribution from the behavior of the full final specification.
+
+### 6.1 Domain-Specific Models
+To assess the explanatory role of each factor group, we estimated separate linear models for the five domains defined earlier: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics. Each model used the same dependent variable—stop-level arrival lateness in minutes—but included only the predictors assigned to that domain.
+
+These domain-specific models were not intended as competing final models. Instead, they were used to show how much variation in delay could be associated with each domain when considered on its own.
+```{r fit}
+df_model <- df_imp
+
+model_results <- list(
+  domain_a_structural = fit_linear(df_model, "domain_a_structural", outcome_cont, domain_a_predictors),
+  domain_b_environment = fit_linear(df_model, "domain_b_environment", outcome_cont, domain_b_predictors),
+  domain_c_temporal = fit_linear(df_model, "domain_c_temporal", outcome_cont, domain_c_predictors),
+  domain_d_operational = fit_linear(df_model, "domain_d_operational", outcome_cont, domain_d_predictors),
+  domain_e_vessel = fit_linear(df_model, "domain_e_vessel", outcome_cont, domain_e_predictors),
+  combined_associative = fit_linear(df_model, "combined_associative", outcome_cont, final_predictors)
+)
+```
+
+
+### 6.2 Combined Associative Model
+
+
+After estimating the domain-specific models, we fit a combined associative model using the final predictor set across all five domains. This combined model serves as the final associative specification in the markdown. Its purpose is to provide a single interpretable model while preserving the ability to discuss structural, environmental, temporal, operational, and vessel-related contributions within one framework.
+### 6.3 Comparison Logic
+
+Model comparison focused on interpretability rather than model selection in a predictive sense. For each domain-specific model, we report summary fit statistics to show the amount of delay variation associated with that domain alone. We then compare those results with the combined associative model to show how the full specification performs when all domains are considered together.
+
+This comparison logic supports the main purpose of the associative model: distinguishing baseline structural effects, external environmental conditions, temporal rhythms, operational delay propagation, and vessel-related differences within a single explanatory framework.
+
+
+## 7) Results: Explanatory Contribution by Domain
+The domain-specific models show that stop-level delay variation is not evenly distributed across explanatory domains. Operational propagation accounts for the largest share of explained variance, followed by structural context. Environmental conditions, temporal patterns, and vessel characteristics each explain a smaller portion of variation on their own, but together they add important interpretive context beyond propagated delay alone. The combined associative model achieves the strongest overall fit, indicating that these domains are complementary rather than redundant.
+```{r}
+model_comparison_summary <- bind_rows(lapply(model_results, `[[`, "metrics")) %>%
+  mutate(
+  domain = dplyr::recode(
+    model_name,
+    combined_associative = "Combined Associative Model",
+    domain_a_structural = "Domain A: Structural Context",
+    domain_b_environment = "Domain B: Environmental Conditions",
+    domain_c_temporal = "Domain C: Temporal Patterns",
+    domain_d_operational = "Domain D: Operational Propagation",
+    domain_e_vessel = "Domain E: Vessel Characteristics"
+  )
+) %>%
+  arrange(match(domain, c(
+    "Domain A: Structural Context",
+    "Domain B: Environmental Conditions",
+    "Domain C: Temporal Patterns",
+    "Domain D: Operational Propagation",
+    "Domain E: Vessel Characteristics",
+    "Combined Associative Model"
+  )))
+
+model_comparison_summary %>%
+  select(domain, n, rsq, adj_rsq, rmse, aic, bic) %>%
+  mutate(
+    rsq = round(rsq, 4),
+    adj_rsq = round(adj_rsq, 4),
+    rmse = round(rmse, 4),
+    aic = round(aic, 0),
+    bic = round(bic, 0)
+  ) %>%
+  kable(caption = "Explained Variation by Domain and Final Combined Associative Model")
+```
+
+### 7.1 Structural Context
+
+The structural-context model explains a meaningful share of stop-level delay variation on its own (R² = 0.1329). This indicates that route and stop configuration establish an important baseline pattern of delay across the system. In substantive terms, some portions of the ferry network appear structurally more delay-prone than others even before environmental or operational carry-forward effects are considered.
+
+
+### 7.2 Environmental Conditions
+```{r}
+env_feature_table <- fit_standardized_linear(
+  df_model,
+  "domain_b_environment",
+  outcome_cont,
+  domain_b_predictors
+)
+
+env_feature_table %>%
+  select(term, estimate, std.error, statistic, p.value, abs_estimate) %>%
+  mutate(
+    estimate = round(estimate, 4),
+    std.error = round(std.error, 4),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 4),
+    abs_estimate = round(abs_estimate, 4)
+  ) %>%
+  kable(caption = "Standardized Coefficients for Environmental Predictors")
+```
+```{r}
+env_feature_table %>%
+  mutate(term = reorder(term, abs_estimate)) %>%
+  ggplot(aes(x = term, y = estimate)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Environmental Predictors in the Associative Model",
+    x = NULL,
+    y = "Standardized coefficient"
+  ) +
+  theme_minimal()
+```
+
+Temperature is the strongest predictor within the environmental domain by a substantial margin. Wind speed, observed water level, and observed current are the next most important variables, while visibility, current residual, and precipitation are weaker. Although the environmental domain explains only a small share of total delay variation overall, its internal structure is not flat: some external-condition variables are clearly more informative than others.
+
+
+### 7.3 Temporal Patterns
+
+The temporal model explains a modest share of variation (R² = 0.0129), indicating that day type, scheduled hour, and season capture recurring service rhythms but do not dominate the delay process on their own. These results suggest that delay does vary systematically across time, but that those temporal patterns are much weaker than the operational propagation and structural-context domains.
+
+### 7.4 Operational Propagation
+
+The operational-propagation model explains by far the largest share of variation among the individual domains (R² = 0.5887). This confirms that delay accumulation within and across trips is the strongest single explanatory component in the associative model. In other words, stop-level delay is highly path-dependent: once lateness has entered the operating chain, a substantial portion of subsequent delay can be understood as propagated rather than newly generated at each stop.
+
+### 7.5 Vessel Characteristics
+
+The vessel-characteristics model explains the smallest share of variation among the five domains (R² = 0.0085). This suggests that vessel-related differences are present but relatively limited when considered in isolation. Vessel effects therefore appear to be secondary to route structure, external conditions, and propagated delay in explaining stop-level lateness.
+
+
+
+## 8) Final Combined Associative Model
+
+### 8.1 Overall Model Fit
+
+The final combined associative model explains a substantial share of stop-level delay variation (R² = 0.7295), clearly outperforming any single domain-specific model. This indicates that the five explanatory domains are complementary rather than interchangeable. While operational propagation provides the strongest single source of explanatory power, the full associative model benefits from combining structural, environmental, temporal, operational, and vessel-related information within one specification.
+
+### 8.2 Relative Importance Across Domains
+
+The combined results suggest a clear hierarchy across domains. Operational propagation is the dominant explanatory component, followed by structural context. Environmental conditions and temporal patterns each explain a smaller but still measurable share of variation, while vessel characteristics contribute the least on their own. This pattern supports a layered interpretation of delay: some variation reflects structural baseline differences across the system, some reflects external operating conditions, and a large share reflects delay that is already being carried forward through the service chain.
+
+### 8.3 Key Interpretable Signals
+
+#### Environmental feature signals
+
+Within the environmental domain, temperature is the strongest individual predictor by a substantial margin. Wind speed, observed water level, and observed current form a second tier of environmental signals, while visibility, current residual, and precipitation appear weaker. This shows that the environmental block is not uniform: even though it explains a relatively small share of total variance overall, some external-condition variables are clearly more informative than others.
+
+#### Operational feature signals
+
+Within the operational domain, both inherited previous-trip delay and carried within-trip delay remain strong positive signals, reinforcing the conclusion that stop-level delay is heavily cumulative. In practical terms, this means that once lateness enters the operating chain, it tends to persist across subsequent stops and linked trips.
+
+#### Structural feature signals
+
+Structural context remains the second most important explanatory domain after operational propagation. This indicates that route and stop configuration establish an important baseline pattern of delay across the system. In substantive terms, some portions of the ferry network appear systematically more delay-prone than others even before short-run operational carry-forward effects are considered.
+
+### 8.4 Interpretation for Operations and Client Use
+
+For the client, the associative model is best understood as a diagnostic tool rather than a forecasting tool. It helps explain why delay patterns differ across the system and separates three broad types of influence: structural baseline conditions, external operating conditions, and propagated operational delay. In this sense, the associative model supports interpretation and diagnosis, while the predictive model remains the main framework for forward-looking operational forecasting.
+
+From an operational perspective, the results suggest three practical takeaways. First, propagated lateness is the dominant short-run driver of delay, so once the system is behind schedule, subsequent stops are likely to continue absorbing that delay. Second, structural context matters, which means that some routes and stop configurations begin from a less favorable operating baseline. Third, external conditions such as temperature, wind, water level, and current do not dominate total variance, but they still provide useful context for understanding when water-side operating conditions may be less favorable.
+
+
+## 9) Save Outputs
+
+```{r save}
+write_csv(model_comparison_summary, file.path(output_dir, "model_comparison_summary.csv"))
+write_csv(imputation_summary, file.path(output_dir, "ais_env_imputation_summary.csv"))
+write_csv(env_feature_table, file.path(output_dir, "environmental_feature_table_standardized.csv"))
+
+tibble(
+  file = c(
+    "model_comparison_summary.csv",
+    "ais_env_imputation_summary.csv",
+    "environmental_feature_table_standardized.csv"
+  )
+) %>% 
+  kable(caption = "Saved Outputs for Associative Model Section")
+```
