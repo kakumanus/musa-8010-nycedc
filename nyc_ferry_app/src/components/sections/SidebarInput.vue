@@ -1,7 +1,7 @@
 <template>
   <aside class="flex flex-col gap-4 w-full h-full overflow-y-auto p-5">
     <div>
-      <h2 class="font-heading text-2xl uppercase tracking-wide text-white">System Map</h2>
+      <h2 class="font-heading text-2xl uppercase tracking-wide text-white">Delay Prediction Form</h2>
       <p class="text-xs text-ferry-light-gray mt-0.5">Enter conditions to predict excessive delay risk</p>
     </div>
 

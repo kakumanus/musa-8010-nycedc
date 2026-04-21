@@ -19,6 +19,21 @@
         <p class="text-xs text-ferry-light-gray mt-0.5"> Precipitation: {{ precip !== null ? `${precip}%` : '—' }}</p>
       </div>
 
+      <!-- direction toggle -->
+      <div class="flex rounded-md overflow-hidden border border-white/10 self-start">
+        <button
+          v-for="d in (['SB', 'NB'] as const)"
+          :key="d"
+          class="px-4 py-1.5 text-xs font-heading uppercase tracking-wider transition-colors"
+          :class="direction === d
+            ? 'bg-ferry-light-blue text-ferry-dark-blue'
+            : 'text-ferry-light-gray hover:text-white'"
+          @click="direction = d"
+        >
+          {{ d === 'SB' ? '↓ Southbound' : '↑ Northbound' }}
+        </button>
+      </div>
+
       <!-- info boxes -->
       <div class="flex flex-col gap-3">
 
@@ -75,9 +90,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   back: []
   'update:activeRoute': [route: string | null]
+  'update:direction': [direction: 'NB' | 'SB']
 }>()
 
 const activeRoute = ref<string | null>(props.routes?.[0] ?? null)
+const direction = ref<'NB' | 'SB'>('SB')
 
 const formattedDate = computed(() => {
   if (!props.date) return '—'
@@ -95,6 +112,10 @@ const formattedDate = computed(() => {
 
 watch(activeRoute, (val) => {
   emit('update:activeRoute', val)
+}, { immediate: true })
+
+watch(direction, (val) => {
+  emit('update:direction', val)
 }, { immediate: true })
 
 watch(

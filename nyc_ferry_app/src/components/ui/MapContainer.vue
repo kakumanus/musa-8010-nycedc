@@ -124,6 +124,21 @@ onUnmounted(() => {
   document.removeEventListener('click', onClickOutside)
 })
 
+// ─── per-route line offsets (pixels, perpendicular to line direction) ─────────
+// Positive = right of travel direction, negative = left.
+// Adjust these values to taste — routes sharing a corridor will spread apart.
+const ROUTE_LINE_OFFSET: maplibregl.ExpressionSpecification = [
+  'match', ['get', 'route_id'],
+  'ER',  0,
+  'SG',  0,
+  'SB',  0,
+  'AS',  0,
+  'RS',  0,
+  'GI',  0,
+  'SV',  0,
+  0  // default
+]
+
 // ─── layers ───────────────────────────────────────────────────────────────────
 
 function addLayers() {
@@ -141,6 +156,7 @@ function addLayers() {
     paint: {
       'line-color': 'transparent',
       'line-width': 20,
+      'line-offset': ROUTE_LINE_OFFSET,
     },
   })
 
@@ -149,9 +165,10 @@ function addLayers() {
     type: 'line',
     source: 'ferry-routes',
     paint: {
-      'line-color': ['concat', '#', ['get', 'color']],
+      'line-color': ['get', 'color'],
       'line-width': 3,
       'line-opacity': 0.85,
+      'line-offset': ROUTE_LINE_OFFSET,
     },
   })
 
@@ -165,10 +182,10 @@ function addLayers() {
     type: 'circle',
     source: 'ferry-stops',
     paint: {
-      'circle-radius': 5,
-      'circle-color': ['get', 'color'],
-      'circle-stroke-width': 1,
-      'circle-stroke-color': '#ffffff',
+      'circle-radius': ['case', ['>', ['get', 'route_count'], 1], 7, 5],
+      'circle-color': ['case', ['>', ['get', 'route_count'], 1], '#ffffff', ['get', 'route_color']],
+      'circle-stroke-width': ['case', ['>', ['get', 'route_count'], 1], 2, 1],
+      'circle-stroke-color': ['case', ['>', ['get', 'route_count'], 1], '#aaaaaa', '#ffffff'],
     },
   })
 
@@ -190,14 +207,42 @@ function addLayers() {
     offset: 10,
   })
 
+  const ROUTE_COLORS: Record<string, string> = {
+    ER: '#228B9D',
+    RS: '#AD1AAC',
+    SB: '#FFD100',
+    AS: '#FE5000',
+    SV: '#4E008E',
+    SG: '#D0006F',
+    GI: '#9893A0',
+  }
+
   map.on('mousemove', 'ferry-stop-circles-hitbox', (e) => {
-    const name = e.features?.[0]?.properties?.name
-    if (!name) return
+    const props = e.features?.[0]?.properties
+    if (!props?.stop_name) return
+
+    // route_info is serialized as a JSON string by sf — parse it to get all route IDs
+    let routeIds: string[] = []
+    try {
+      routeIds = JSON.parse(props.route_info).route_id ?? []
+    } catch {}
+
+    const badges = routeIds
+      .map(id => {
+        const color = ROUTE_COLORS[id] ?? '#888888'
+        // Use dark text on yellow (SB), white on everything else
+        const textColor = id === 'SB' ? '#000000' : '#ffffff'
+        return `<span style="background:${color};color:${textColor};padding:1px 6px;border-radius:3px;font-size:11px;font-weight:600;">${id}</span>`
+      })
+      .join(' ')
 
     map!.getCanvas().style.cursor = 'pointer'
     stopPopup
       .setLngLat((e.features![0].geometry as GeoJSON.Point).coordinates as [number, number])
-      .setHTML(`<span>${name}</span>`)
+      .setHTML(`<div style="display:flex;flex-direction:column;gap:4px;">
+        <span style="font-weight:600;">${props.stop_name}</span>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">${badges}</div>
+      </div>`)
       .addTo(map!)
   })
 
@@ -218,9 +263,13 @@ function addLayers() {
 // ─── data ─────────────────────────────────────────────────────────────────────
 
 async function loadData() {
+  const base      = import.meta.env.BASE_URL.replace(/\/$/, '')
+  const routeUrl  = `${base}/routes_processed.geojson`
+  const stopUrl   = `${base}/landings_processed.geojson`
+
   const [routes, stops] = await Promise.all([
-    fetch('https://raw.githubusercontent.com/kakumanus/musa-8010-nycedc/refs/heads/main/GeoJSONs/routes.geojson').then(r => r.json()),
-    fetch('https://raw.githubusercontent.com/kakumanus/musa-8010-nycedc/refs/heads/main/GeoJSONs/landings.geojson').then(r => r.json()),
+    fetch(routeUrl).then(r => r.json()),
+    fetch(stopUrl).then(r => r.json()),
   ])
 
   ;(map?.getSource('ferry-routes') as maplibregl.GeoJSONSource)?.setData(routes)
@@ -261,7 +310,7 @@ function resetView() {
 // ─── expose ───────────────────────────────────────────────────────────────────
 
 defineExpose({
-  fitToRoutes(routeNames: string[]) {
+  fitToRoutes(routeNames: string[], leftPadding = 60) {
     if (!map) return
     const source = map.getSource('ferry-routes') as maplibregl.GeoJSONSource
     const data = (source as any)._data as GeoJSON.FeatureCollection<GeoJSON.LineString>
@@ -278,7 +327,7 @@ defineExpose({
       (b, c) => b.extend(c),
       new maplibregl.LngLatBounds(allCoords[0], allCoords[0])
     )
-    map.fitBounds(bounds, { padding: 60 })
+    map.fitBounds(bounds, { padding: { top: 60, bottom: 60, left: leftPadding, right: 60 } })
   },
   resetView,
 })

@@ -11,7 +11,10 @@
     />
 
     <div
-      class="absolute top-4 bottom-4 left-4 z-10 w-80 flex flex-col rounded-lg overflow-hidden bg-ferry-dark-blue/90 backdrop-blur-sm border border-white/10 shadow-xl"
+      :class="[
+        'absolute top-4 bottom-4 left-4 z-10 flex flex-col rounded-lg overflow-hidden bg-ferry-dark-blue/90 backdrop-blur-sm border border-white/10 shadow-xl transition-[width] duration-300',
+        view === 'route' ? 'w-[640px]' : 'w-80',
+      ]"
     >
       <Transition name="sidebar" mode="out-in">
         <SidebarResults
@@ -22,6 +25,7 @@
           :temp="savedForm.temp"
           :precip="savedForm.precip"
           @update:active-route="activeTabRoute = $event"
+          @update:direction="activeDirection = $event"
           @back="goToSystem"
         />
         <SidebarInput
@@ -35,14 +39,6 @@
         />
       </Transition>
     </div>
-
-    <!-- learn more button -->
-    <button
-      class="absolute bottom-4 right-4 z-30 text-xs text-ferry-light-gray hover:text-white transition-colors"
-      @click="showMethodology = true"
-    >
-      Learn more
-    </button>
 
     <!-- methodology overlay -->
     <Transition name="overlay">
@@ -88,7 +84,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import MapContainer from './ui/MapContainer.vue'
 import SidebarInput from './sections/SidebarInput.vue'
 import SidebarResults from './sections/SidebarResults.vue'
@@ -101,6 +97,7 @@ const selectedDate = ref<string | undefined>(undefined)
 const selectedRoutes = ref<string[]>([])
 const allRoutes = ref<string[]>([])
 const activeTabRoute = ref<string | null>(null)
+const activeDirection = ref<'NB' | 'SB'>('SB')
 const showMethodology = ref(false)
 const mapRef = ref<InstanceType<typeof MapContainer> | null>(null)
 const savedForm = ref({
@@ -113,8 +110,14 @@ function handleSystemSubmit(values: { route: string; routes: string[]; date: str
   selectedRoute.value = values.routes[0] ?? values.route ?? undefined
   selectedDate.value = values.date
   view.value = 'route'
-  mapRef.value?.fitToRoutes(values.routes)
+  mapRef.value?.fitToRoutes(values.routes, 680)
 }
+
+watch(activeTabRoute, (val) => {
+  if (view.value !== 'route') return
+  const targets = val ? [val] : (selectedRoutes.value.length ? selectedRoutes.value : allRoutes.value)
+  mapRef.value?.fitToRoutes(targets, 680)
+})
 
 function goToSystem() {
   view.value = 'system'
