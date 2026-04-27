@@ -1,6 +1,6 @@
 <template>
   <aside class="flex flex-col w-full h-full">
-    <div class="flex flex-col gap-4 flex-1 overflow-y-auto p-5">
+    <div class="flex flex-col gap-4 flex-1 overflow-y-auto p-5 scrollbar-thin">
       <button
         class="flex items-center gap-1.5 text-sm text-ferry-light-blue hover:text-white transition-colors"
         @click="$emit('back')"
@@ -76,7 +76,6 @@
           </div>
 
           <template v-else-if="hourlyCurve.length">
-            <!-- SVG line chart -->
             <svg viewBox="0 0 260 80" class="w-full" xmlns="http://www.w3.org/2000/svg">
               <line x1="0" y1="20" x2="260" y2="20" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
               <line x1="0" y1="40" x2="260" y2="40" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
@@ -97,7 +96,6 @@
               />
             </svg>
 
-            <!-- slider -->
             <div class="flex flex-col gap-1">
               <input
                 type="range"
@@ -105,7 +103,7 @@
                 :max="hourlyCurve[hourlyCurve.length - 1].hour"
                 :value="selectedHour ?? hourlyCurve[0].hour"
                 step="1"
-                class="w-full accent-ferry-light-blue"
+                class="w-full slider-custom"
                 @input="onSliderInput"
               />
               <div class="flex justify-between text-xs text-ferry-light-gray">
@@ -120,7 +118,7 @@
               <p class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">{{ formatHour(selectedHour) }} Conditions</p>
               <div class="grid grid-cols-3 gap-2">
                 <div class="flex flex-col gap-0.5">
-                  <p class="text-xs text-ferry-light-gray">Avg Trips</p>
+                  <p class="text-xs text-ferry-light-gray">Trips</p>
                   <p class="text-sm font-heading text-white">
                     {{ hourlyStats.avg_trips !== null ? hourlyStats.avg_trips : '—' }}
                   </p>
@@ -132,11 +130,93 @@
                   </p>
                 </div>
                 <div class="flex flex-col gap-0.5">
-                  <p class="text-xs text-ferry-light-gray">Vessel Size</p>
+                  <p class="text-xs text-ferry-light-gray">Vessel</p>
                   <p class="text-sm font-heading text-white">
                     {{ hourlyStats.vessel_capacity !== null ? hourlyStats.vessel_capacity : '—' }}
                   </p>
                 </div>
+              </div>
+            </div>
+
+            <!-- route summary card -->
+            <div v-if="activeRoute && routeSummary" class="mt-1 rounded-lg bg-white/5 border border-white/10 p-3 flex flex-col gap-2">
+              <p class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">Route Summary</p>
+              <div class="grid grid-cols-2 gap-2">
+                <div class="flex flex-col gap-0.5">
+                  <p class="text-xs text-ferry-light-gray">Peak Hour</p>
+                  <p class="text-sm font-heading text-white">{{ routeSummary.peakHour }}</p>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                  <p class="text-xs text-ferry-light-gray">Hrs Over Capacity</p>
+                  <p class="text-sm font-heading" :class="routeSummary.hoursOverCapacity > 0 ? 'text-red-400' : 'text-green-400'">
+                    {{ routeSummary.hoursOverCapacity }}
+                  </p>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                  <p class="text-xs text-ferry-light-gray">Avg Load</p>
+                  <p class="text-sm font-heading" :class="routeSummary.avgLoadClass">
+                    {{ `${(routeSummary.avgLoad * 100).toFixed(0)}%` }}
+                  </p>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                  <p class="text-xs text-ferry-light-gray">Avg Trips / Hr</p>
+                  <p class="text-sm font-heading text-white">
+                    {{ routeSummary.avgTrips !== null ? routeSummary.avgTrips : '—' }}
+                  </p>
+                </div>
+                <div v-if="dailyDelayRiskPct !== null" class="flex flex-col gap-0.5">
+                  <p class="text-xs text-ferry-light-gray">Daily Delay Risk</p>
+                  <p
+                    class="text-sm font-heading"
+                    :class="dailyDelayRiskPct >= 60 ? 'text-red-400' : dailyDelayRiskPct >= 30 ? 'text-yellow-400' : 'text-green-400'"
+                  >
+                    {{ dailyDelayRiskPct }}%
+                  </p>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                  <p class="text-xs text-ferry-light-gray">High Risk Hrs</p>
+                  <p class="text-sm font-heading" :class="highRiskHours > 0 ? 'text-red-400' : 'text-green-400'">
+                    {{ highRiskHours }}
+                  </p>
+                </div>
+              </div>
+
+              <!-- load factor bar chart -->
+              <div v-if="loadChartEntries.length" class="mt-2">
+                <p class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray mb-2">Load by Hour</p>
+                <svg :viewBox="`0 0 ${loadChartWidth} ${loadChartHeight}`" class="w-full" xmlns="http://www.w3.org/2000/svg">
+                  <line
+                    x1="0" :y1="loadChartYScale(1.0)"
+                    :x2="loadChartWidth" :y2="loadChartYScale(1.0)"
+                    stroke="rgba(248,113,113,0.6)" stroke-width="1" stroke-dasharray="3 2"
+                  />
+                  <g v-for="(entry, i) in loadChartEntries" :key="entry.hour">
+                    <rect
+                      :x="i * loadChartBarStep"
+                      :y="loadChartYScale(entry.lf)"
+                      :width="loadChartBarW"
+                      :height="loadChartHeight - loadChartPadBottom - loadChartYScale(entry.lf)"
+                      :fill="entry.lf > 1.0 ? 'rgba(248,113,113,0.7)' : entry.lf >= 0.9 ? 'rgba(250,204,21,0.5)' : 'rgba(74,222,128,0.4)'"
+                      rx="1"
+                    />
+                    <text
+                      :x="i * loadChartBarStep + loadChartBarW / 2"
+                      :y="loadChartHeight - 2"
+                      text-anchor="middle"
+                      font-size="6"
+                      fill="rgba(255,255,255,0.4)"
+                    >{{ entry.hourLabel }}</text>
+                  </g>
+                  <text x="1" :y="loadChartYScale(1.0) - 2" font-size="6" fill="rgba(248,113,113,0.8)">100%</text>
+                </svg>
+                <div v-if="overCapacityHours.length" class="mt-1 flex flex-wrap gap-1">
+                  <p class="text-xs text-ferry-light-gray w-full">Over capacity:</p>
+                  <span
+                    v-for="h in overCapacityHours" :key="h"
+                    class="text-xs bg-red-500/20 text-red-400 rounded px-1.5 py-0.5"
+                  >{{ formatHour(h) }}</span>
+                </div>
+                <p v-else class="text-xs text-green-400 mt-1">No hours over capacity</p>
               </div>
             </div>
 
@@ -178,7 +258,6 @@ async function loadGtfsStats() {
     fetch('https://raw.githubusercontent.com/kakumanus/musa-8010-nycedc/refs/heads/main/nyc_ferry_app/public/gtfs/calendar.txt').then(r => r.text()),
   ])
 
-  // Parse calendar.txt -> classify service_id as WEEKDAY or WEEKEND
   const serviceType: Record<string, 'WEEKDAY' | 'WEEKEND'> = {}
   for (const line of calendarText.trim().split('\n').slice(1)) {
     const cols = line.split(',')
@@ -187,21 +266,19 @@ async function loadGtfsStats() {
     serviceType[service_id] = monday === '1' ? 'WEEKDAY' : 'WEEKEND'
   }
 
-  // Parse trips.txt -> map trip_id to { route_id, daytype }
   const tripInfo: Record<string, { route_id: string; daytype: string }> = {}
   const primaryServices = new Set(['1', '5'])
 
-for (const line of tripsText.trim().split('\n').slice(1)) {
-  const cols = line.split(',')
-  const route_id = cols[0].replace(/"/g, '').trim()
-  const service_id = cols[1].replace(/"/g, '').trim()
-  const trip_id = cols[2].replace(/"/g, '').trim()
-  if (!primaryServices.has(service_id)) continue
-  const daytype = serviceType[service_id] ?? 'WEEKDAY'
-  tripInfo[trip_id] = { route_id, daytype }
-}
+  for (const line of tripsText.trim().split('\n').slice(1)) {
+    const cols = line.split(',')
+    const route_id = cols[0].replace(/"/g, '').trim()
+    const service_id = cols[1].replace(/"/g, '').trim()
+    const trip_id = cols[2].replace(/"/g, '').trim()
+    if (!primaryServices.has(service_id)) continue
+    const daytype = serviceType[service_id] ?? 'WEEKDAY'
+    tripInfo[trip_id] = { route_id, daytype }
+  }
 
-  // Parse stop_times.txt -> count trips per route per daytype per hour
   const counts: Record<string, Record<string, Record<number, Set<string>>>> = {}
   for (const line of stopTimesText.trim().split('\n').slice(1)) {
     const cols = line.split(',')
@@ -220,7 +297,6 @@ for (const line of tripsText.trim().split('\n').slice(1)) {
     counts[route_id][daytype][hour].add(trip_id)
   }
 
-  // Convert sets to counts, structured as route -> daytype -> hour -> count
   const result: Record<string, Record<string, Record<number, number>>> = {}
   for (const route in counts) {
     result[route] = {}
@@ -270,7 +346,7 @@ const emit = defineEmits<{
 }>()
 
 const activeRoute = ref<string | null>(props.routes?.[0] ?? null)
-const selectedHour = ref<number | null>(null)
+const selectedHour = ref<number | null>(6)
 
 const CHART_W = 260
 const CHART_H = 80
@@ -308,14 +384,12 @@ const selectedDotColor = computed(() => {
   return '#4ade80'
 })
 
-// Look up stats for selected route + hour
 const hourlyStats = computed(() => {
   if (selectedHour.value === null || !activeRoute.value) return null
   const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
   const staticData = HOURLY_STATS[routeId]?.[selectedHour.value] ?? null
   if (!staticData) return null
 
-  // Derive daytype from the date prop
   let daytype = 'WEEKDAY'
   if (props.date) {
     const [month, day, year] = props.date.split('/').map(Number)
@@ -325,6 +399,96 @@ const hourlyStats = computed(() => {
 
   const trips = gtfsTripsPerHour.value[routeId]?.[daytype]?.[selectedHour.value] ?? null
   return { ...staticData, avg_trips: trips }
+})
+
+const highRiskHours = computed(() => {
+  if (!props.hourlyCurve?.length) return 0
+  return props.hourlyCurve.filter(p => p.probability >= 0.6).length
+})
+
+const routeSummary = computed(() => {
+  if (!activeRoute.value) return null
+  const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
+  const stats = HOURLY_STATS[routeId]
+  if (!stats) return null
+
+  const entries = Object.entries(stats).map(([h, v]) => ({ hour: parseInt(h), ...v }))
+  if (!entries.length) return null
+
+  const peak = entries.reduce((a, b) => a.max_load_factor >= b.max_load_factor ? a : b)
+  const peakHour = formatHour(peak.hour)
+  const hoursOverCapacity = entries.filter(e => e.max_load_factor > 1.0).length
+  const avgLoad = entries.reduce((sum, e) => sum + e.max_load_factor, 0) / entries.length
+  const avgLoadClass = avgLoad >= 1.1 ? 'text-red-400' : avgLoad >= 0.9 ? 'text-yellow-400' : 'text-green-400'
+
+  let avgTrips: number | null = null
+  let daytype = 'WEEKDAY'
+  if (props.date) {
+    const [month, day, year] = props.date.split('/').map(Number)
+    const dow = new Date(year, month - 1, day).getDay()
+    daytype = (dow === 0 || dow === 6) ? 'WEEKEND' : 'WEEKDAY'
+  }
+  const tripsByHour = gtfsTripsPerHour.value[routeId]?.[daytype]
+  if (tripsByHour) {
+    const tripValues = Object.values(tripsByHour)
+    if (tripValues.length) {
+      avgTrips = Math.round(tripValues.reduce((s, v) => s + v, 0) / tripValues.length)
+    }
+  }
+
+  return { peakHour, hoursOverCapacity, avgLoad, avgLoadClass, avgTrips }
+})
+
+const dailyDelayRiskPct = computed(() => {
+  if (!props.hourlyCurve?.length) return null
+  const avg = props.hourlyCurve.reduce((sum, p) => sum + p.probability, 0) / props.hourlyCurve.length
+  return Math.round(avg * 100)
+})
+
+const loadChartPadBottom = 12
+const loadChartHeight = 80
+
+const loadChartEntries = computed(() => {
+  if (!activeRoute.value) return []
+  const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
+  const stats = HOURLY_STATS[routeId]
+  if (!stats) return []
+  return Object.entries(stats)
+    .map(([h, v]) => ({
+      hour: parseInt(h),
+      lf: v.max_load_factor,
+      hourLabel: parseInt(h) < 12 ? `${h}a` : parseInt(h) === 12 ? '12p' : `${parseInt(h) - 12}p`,
+    }))
+    .sort((a, b) => a.hour - b.hour)
+})
+
+const loadChartBarStep = computed(() => {
+  const n = loadChartEntries.value.length
+  return n > 0 ? 240 / n : 14
+})
+
+const loadChartBarW = computed(() => Math.max(loadChartBarStep.value - 2, 4))
+const loadChartWidth = computed(() => loadChartEntries.value.length * loadChartBarStep.value)
+
+const maxLF = computed(() => {
+  if (!loadChartEntries.value.length) return 1.5
+  return Math.max(1.5, ...loadChartEntries.value.map(e => e.lf))
+})
+
+function loadChartYScale(lf: number): number {
+  const drawH = loadChartHeight - loadChartPadBottom
+  return drawH - (lf / maxLF.value) * drawH
+}
+
+const overCapacityHours = computed(() => {
+  if (!activeRoute.value) return []
+  const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
+  const stats = HOURLY_STATS[routeId]
+  if (!stats) return []
+  return Object.entries(stats)
+    .filter(([, v]) => v.max_load_factor > 1.0)
+    .map(([h]) => parseInt(h))
+    .sort((a, b) => a - b)
 })
 
 const loadFactorClass = computed(() => {
@@ -394,3 +558,66 @@ watch(() => props.hourlyCurve, (val) => {
   if (val?.length) selectedHour.value = null
 })
 </script>
+
+<style scoped>
+/* Scrollbar */
+.overflow-y-auto::-webkit-scrollbar {
+  width: 4px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 999px;
+}
+
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+}
+
+/* Firefox */
+.overflow-y-auto {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
+}
+
+/* Slider */
+.slider-custom {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  outline: none;
+  cursor: pointer;
+}
+
+.slider-custom::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #63b3ed;
+  border: 2px solid white;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.slider-custom::-webkit-slider-thumb:hover {
+  background: #90cdf4;
+}
+
+.slider-custom::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #63b3ed;
+  border: 2px solid white;
+  cursor: pointer;
+}
+</style>
