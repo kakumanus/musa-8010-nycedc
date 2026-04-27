@@ -95,8 +95,8 @@ import { ref, watch, onMounted } from 'vue'
 import MapContainer from './ui/MapContainer.vue'
 import SidebarInput from './sections/SidebarInput.vue'
 import SidebarResults from './sections/SidebarResults.vue'
-import { getSeasonFromDate, getDaytypeFromDate, getLookupDefaults } from './predictionlookup.js'
-import { loadCache, lookupPrediction } from './predictionCache'
+import { getSeasonFromDate, getDaytypeFromDate } from './predictionlookup.js'
+import { loadCache, lookupPrediction, getRoutePairs } from './predictionCache'
 
 type View = 'system' | 'route'
 type RiskLevel = 'low' | 'medium' | 'high' | null
@@ -124,17 +124,6 @@ const savedForm = ref({
   precip: null as number | null,
 })
 
-const ROUTE_NAME_MAP: Record<string, string> = {
-  'Astoria': 'AS',
-  'East River': 'ER',
-  'Gouverneur Island': 'GI',
-  'Rockaway': 'RR',
-  'Rockaway Wave': 'RW',
-  'South Brooklyn': 'SB',
-  'St. George': 'SG',
-  'Soundview': 'SV',
-}
-
 // To switch to a live hosted API, restore fetchPrediction() calls in
 // handleSystemSubmit and onHourSelected, and update the URL below to your
 // deployed R Plumber endpoint (e.g. https://your-app.onrender.com/predict).
@@ -152,22 +141,31 @@ const ROUTE_NAME_MAP: Record<string, string> = {
 
 onMounted(async () => { await loadCache() })
 
+// Average delay probability across all stop-pair segments for a route.
+function avgSegments(pairs: [string, string][], direction: string, season: string, daytype: string, temp: number, precip: number, hour: number) {
+  if (!pairs.length) return { delay_probability: 0, risk_level: 'low' as const }
+  const probs = pairs.map(([from, to]) =>
+    lookupPrediction(from, to, direction, season, daytype, temp, precip, hour).delay_probability
+  )
+  const avg = probs.reduce((s, p) => s + p, 0) / probs.length
+  const risk = avg >= 0.6 ? 'high' : avg >= 0.3 ? 'medium' : 'low'
+  return { delay_probability: avg, risk_level: risk as 'low' | 'medium' | 'high' }
+}
+
 // Shared helper — runs main prediction + full hourly curve for the given inputs.
 // Called on initial submit and again whenever the direction toggle changes.
-function runPredictions(routeId: string, direction: string, season: string, daytype: string, temp: number, precip: number) {
+function runPredictions(routeName: string, direction: string, season: string, daytype: string, temp: number, precip: number) {
   riskLevel.value = null
   delayProbability.value = null
   hourlyCurve.value = []
 
-  const defaults   = getLookupDefaults(routeId, direction, season, daytype)
-  const medianHour = Math.round(defaults.prev_stop_sched_hour ?? 13)
-
-  const main = lookupPrediction(routeId, direction, season, daytype, temp, precip, medianHour)
-  riskLevel.value       = main.risk_level as 'low' | 'medium' | 'high'
+  const pairs = getRoutePairs(routeName, direction)
+  const main  = avgSegments(pairs, direction, season, daytype, temp, precip, 13)
+  riskLevel.value        = main.risk_level
   delayProbability.value = main.delay_probability
 
   hourlyCurve.value = HOURS.map(hour => {
-    const r = lookupPrediction(routeId, direction, season, daytype, temp, precip, hour)
+    const r = avgSegments(pairs, direction, season, daytype, temp, precip, hour)
     return { hour, probability: r.delay_probability, risk: r.risk_level }
   })
 
@@ -205,31 +203,30 @@ function handleSystemSubmit(values: {
   view.value          = 'route'
   mapRef.value?.fitToRoutes(values.routes, 680)
 
-  const season  = getSeasonFromDate(values.date)
-  const daytype = getDaytypeFromDate(values.date)
-  const fullName = values.routes[0] ?? values.route ?? ''
-  const routeId  = ROUTE_NAME_MAP[fullName] ?? fullName ?? 'ER'
+  const season    = getSeasonFromDate(values.date)
+  const daytype   = getDaytypeFromDate(values.date)
+  const routeName = values.routes[0] ?? values.route ?? 'East River'
 
-  runPredictions(routeId, activeDirection.value, season, daytype, values.temp ?? 60, values.precip ?? 0)
+  runPredictions(routeName, activeDirection.value, season, daytype, values.temp ?? 60, values.precip ?? 0)
 }
 
 function onDirectionToggle(direction: 'NB' | 'SB') {
   activeDirection.value = direction
   if (view.value !== 'route' || !savedForm.value.date) return
-  const season  = getSeasonFromDate(savedForm.value.date)
-  const daytype = getDaytypeFromDate(savedForm.value.date)
-  const routeName = activeTabRoute.value ?? selectedRoute.value ?? ''
-  const routeId = (ROUTE_NAME_MAP[routeName] ?? routeName) || 'ER'
-  runPredictions(routeId, direction, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0)
+  const season    = getSeasonFromDate(savedForm.value.date)
+  const daytype   = getDaytypeFromDate(savedForm.value.date)
+  const routeName = activeTabRoute.value ?? selectedRoute.value ?? 'East River'
+  runPredictions(routeName, direction, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0)
 }
 
 function onHourSelected(hour: number) {
-  if (!selectedRoute.value || !savedForm.value.date) return
-  const season  = getSeasonFromDate(savedForm.value.date)
-  const daytype = getDaytypeFromDate(savedForm.value.date)
-  const routeId = ROUTE_NAME_MAP[selectedRoute.value] ?? selectedRoute.value ?? 'ER'
-  const result  = lookupPrediction(routeId, activeDirection.value, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0, hour)
-  riskLevel.value        = result.risk_level as 'low' | 'medium' | 'high'
+  if (!savedForm.value.date) return
+  const season    = getSeasonFromDate(savedForm.value.date)
+  const daytype   = getDaytypeFromDate(savedForm.value.date)
+  const routeName = activeTabRoute.value ?? selectedRoute.value ?? 'East River'
+  const pairs     = getRoutePairs(routeName, activeDirection.value)
+  const result    = avgSegments(pairs, activeDirection.value, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0, hour)
+  riskLevel.value        = result.risk_level
   delayProbability.value = result.delay_probability
 
   // --- API version (restore for live hosted deployment) ---
@@ -245,6 +242,12 @@ watch(activeTabRoute, (val) => {
   if (view.value !== 'route') return
   const targets = val ? [val] : (selectedRoutes.value.length ? selectedRoutes.value : allRoutes.value)
   mapRef.value?.fitToRoutes(targets, 680)
+
+  if (!savedForm.value.date) return
+  const season    = getSeasonFromDate(savedForm.value.date)
+  const daytype   = getDaytypeFromDate(savedForm.value.date)
+  const routeName = val ?? selectedRoute.value ?? 'East River'
+  runPredictions(routeName, activeDirection.value, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0)
 })
 
 function goToSystem() {

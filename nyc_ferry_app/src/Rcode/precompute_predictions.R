@@ -3,7 +3,7 @@ library(arrow)
 library(dplyr)
 library(jsonlite)
 
-# ── Resolve script directory so paths work regardless of working directory ────
+# ── Resolve script directory ──────────────────────────────────────────────────
 script_dir <- if (!is.null(sys.frames()[[1]]$ofile)) {
   dirname(normalizePath(sys.frames()[[1]]$ofile))
 } else {
@@ -14,9 +14,11 @@ model    <- readRDS(file.path(script_dir, "final_rf_model_workflow.rds"))
 parquet  <- read_parquet(file.path(script_dir, "../../../exploratory_code/modeling/baseline_prediction_table_stop_level_v2.parquet"))
 out_path <- file.path(script_dir, "../../public/predictions_precomputed.json")
 
-# ── Compute lookup medians from parquet ───────────────────────────────────────
+# ── Compute lookup medians per stop pair ──────────────────────────────────────
+# Group by the actual (from, to) stop pair + direction/season/daytype.
+# from_stop_id and to_stop_id are now the group keys, not aggregated medians.
 lookup <- parquet %>%
-  group_by(route_id, direction, schedule_season, schedule_daytype) %>%
+  group_by(from_stop_id, to_stop_id, direction, schedule_season, schedule_daytype) %>%
   summarise(
     boardings_lag_7d                = median(boardings_lag_7d,                na.rm = TRUE),
     alightings_lag_7d               = median(alightings_lag_7d,               na.rm = TRUE),
@@ -31,16 +33,12 @@ lookup <- parquet %>%
     segment_hourly_vessel_count_all = median(segment_hourly_vessel_count_all, na.rm = TRUE),
     env_narrows_current_obs         = median(env_narrows_current_obs,         na.rm = TRUE),
     env_battery_water_level_obs     = median(env_battery_water_level_obs,     na.rm = TRUE),
-    from_stop_id                    = as.character(round(median(as.numeric(from_stop_id), na.rm = TRUE))),
-    to_stop_id                      = as.character(round(median(as.numeric(to_stop_id),   na.rm = TRUE))),
     prev_stop_shared_stop_flag      = median(as.numeric(prev_stop_shared_stop_flag), na.rm = TRUE) >= 0.5,
     curr_stop_shared_stop_flag      = median(as.numeric(curr_stop_shared_stop_flag), na.rm = TRUE) >= 0.5,
     is_terminal_stop                = median(as.numeric(is_terminal_stop),           na.rm = TRUE) >= 0.5,
     .groups = "drop"
   )
 
-# Factor levels for stop IDs derived from the full parquet so the recipe
-# recognises them as known levels (avoids step_unknown() fallback)
 stop_id_levels <- sort(unique(as.character(c(parquet$from_stop_id, parquet$to_stop_id))))
 
 # ── Grid of user-controllable inputs ─────────────────────────────────────────
@@ -56,23 +54,22 @@ grid <- expand.grid(
 )
 
 total <- nrow(lookup) * nrow(grid)
-cat(sprintf("Pre-computing %d predictions across %d route/season combos...\n",
+cat(sprintf("Pre-computing %d predictions across %d stop-pair/season combos...\n",
             total, nrow(lookup)))
 
-# ── Pre-computation (batched per combo for speed) ─────────────────────────────
+# ── Pre-computation ───────────────────────────────────────────────────────────
 results   <- vector("list", total)
 names_vec <- character(total)
 idx       <- 1
 
 for (i in seq_len(nrow(lookup))) {
-  d         <- lookup[i, ]
-  combo_key <- paste(d$route_id, d$direction, d$schedule_season, d$schedule_daytype, sep = "_")
+  d <- lookup[i, ]
 
-  # Build a tibble with all 26 raw predictor columns the workflow expects.
-  # Scalar background features are recycled by tibble() to nrow(grid) rows.
-  # The recipe handles all factor encoding internally — no manual one-hot needed.
+  # Key: {from}_{to}_{direction}_{season}_{daytype}_{temp}_{precip}_{hour}
+  combo_key <- paste(d$from_stop_id, d$to_stop_id, d$direction,
+                     d$schedule_season, d$schedule_daytype, sep = "_")
+
   batch <- tibble(
-    # Numeric background features
     boardings_lag_7d                = d$boardings_lag_7d,
     alightings_lag_7d               = d$alightings_lag_7d,
     curr_vessel_count_lag_7d        = d$curr_vessel_count_lag_7d,
@@ -88,33 +85,24 @@ for (i in seq_len(nrow(lookup))) {
     env_battery_water_level_obs     = d$env_battery_water_level_obs,
     env_visibility_m                = 10000,
     env_wind_speed_mps              = 3.0,
-
-    # Nominal background features (factors matching training encoding)
     direction                  = factor(d$direction,         levels = c("NB", "SB")),
     schedule_season            = factor(d$schedule_season,   levels = c("FALL", "SPRING", "SUMMER_1", "SUMMER_2", "WINTER")),
     schedule_daytype           = factor(d$schedule_daytype,  levels = c("WEEKDAY", "WEEKEND")),
     curr_stop_shared_stop_flag = factor(as.character(d$curr_stop_shared_stop_flag), levels = c("FALSE", "TRUE")),
     prev_stop_shared_stop_flag = factor(as.character(d$prev_stop_shared_stop_flag), levels = c("FALSE", "TRUE")),
     is_terminal_stop           = factor(as.character(d$is_terminal_stop),           levels = c("FALSE", "TRUE")),
-    from_stop_id               = factor(d$from_stop_id, levels = stop_id_levels),
-    to_stop_id                 = factor(d$to_stop_id,   levels = stop_id_levels),
-
-    # User-controlled inputs — vary per row
+    from_stop_id               = factor(as.character(d$from_stop_id), levels = stop_id_levels),
+    to_stop_id                 = factor(as.character(d$to_stop_id),   levels = stop_id_levels),
     env_temperature_c    = (grid$temp_f - 32) * 5 / 9,
     env_precipitation_mm = grid$precip_pct / 100 * 25.4,
     prev_stop_sched_hour = as.numeric(grid$hour)
   )
 
-  # workflow predict: recipe preprocessing runs automatically
   delay_probs <- round(predict(model, new_data = batch, type = "prob")$.pred_yes, 4)
-  risk_levels <- ifelse(delay_probs >= 0.6, "high", ifelse(delay_probs >= 0.3, "medium", "low"))
 
   keys <- paste(combo_key, grid$temp_f, grid$precip_pct, grid$hour, sep = "_")
   for (j in seq_len(nrow(grid))) {
-    results[[idx]] <- list(
-      delay_probability = jsonlite::unbox(delay_probs[j]),
-      risk_level        = jsonlite::unbox(risk_levels[j])
-    )
+    results[[idx]] <- jsonlite::unbox(delay_probs[j])
     names_vec[idx] <- keys[j]
     idx <- idx + 1
   }

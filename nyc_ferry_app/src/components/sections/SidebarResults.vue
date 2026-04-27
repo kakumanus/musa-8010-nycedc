@@ -80,25 +80,28 @@
           </div>
 
           <template v-else-if="hourlyCurve.length">
-            <svg viewBox="0 0 260 80" class="w-full" xmlns="http://www.w3.org/2000/svg">
-              <line x1="0" y1="20" x2="260" y2="20" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
-              <line x1="0" y1="40" x2="260" y2="40" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
-              <line x1="0" y1="60" x2="260" y2="60" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
-              <rect x="0" y="0" width="260" :height="probToY(0.6)" fill="rgba(239,68,68,0.05)" />
-              <rect x="0" :y="probToY(0.6)" width="260" :height="probToY(0.3) - probToY(0.6)" fill="rgba(234,179,8,0.05)" />
-              <rect x="0" :y="probToY(0.3)" width="260" :height="80 - probToY(0.3)" fill="rgba(34,197,94,0.05)" />
-              <path :d="areaPath" fill="rgba(99,179,237,0.15)" />
-              <path :d="linePath" fill="none" stroke="#63b3ed" stroke-width="1.5" stroke-linejoin="round" />
-              <circle
+            <div class="relative w-full">
+              <svg viewBox="0 0 260 80" class="w-full" xmlns="http://www.w3.org/2000/svg">
+                <line x1="0" y1="20" x2="260" y2="20" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+                <line x1="0" y1="40" x2="260" y2="40" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+                <line x1="0" y1="60" x2="260" y2="60" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+                <rect x="0" y="0" width="260" :height="probToY(0.6)" fill="rgba(239,68,68,0.05)" />
+                <rect x="0" :y="probToY(0.6)" width="260" :height="probToY(0.3) - probToY(0.6)" fill="rgba(234,179,8,0.05)" />
+                <rect x="0" :y="probToY(0.3)" width="260" :height="80 - probToY(0.3)" fill="rgba(34,197,94,0.05)" />
+                <path :d="areaPath" fill="rgba(99,179,237,0.15)" />
+                <path :d="linePath" fill="none" stroke="#63b3ed" stroke-width="1.5" stroke-linejoin="round" />
+              </svg>
+              <div
                 v-if="selectedHour !== null"
-                :cx="hourToX(selectedHour)"
-                :cy="probToY(hourlyCurve.find(p => p.hour === selectedHour)?.probability ?? 0)"
-                r="4"
-                :fill="selectedDotColor"
-                stroke="white"
-                stroke-width="1.5"
+                class="absolute inset-y-0 w-px pointer-events-none"
+                :style="{
+                  left: `${((selectedHour - 6) / (22 - 6)) * 100}%`,
+                  background: selectedDotColor,
+                  opacity: '0.8',
+                  transform: 'translateX(-50%)',
+                }"
               />
-            </svg>
+            </div>
 
             <div class="flex flex-col gap-1">
               <input
