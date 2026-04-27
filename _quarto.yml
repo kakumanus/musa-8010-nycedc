@@ -1,6 +1,6 @@
 project:
   type: website
-  output-dir: docs
+  output-dir: nyc_ferry_app/public/docs
   
 website:
   title: "NYC Ferry Delay Prediction"
