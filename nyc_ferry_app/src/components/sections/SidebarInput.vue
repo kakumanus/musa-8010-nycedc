@@ -70,36 +70,6 @@
         </div>
       </div>
 
-      <!-- Direction selector -->
-      <div class="flex flex-col gap-1">
-        <label class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">
-          Direction
-        </label>
-        <div class="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            class="py-2 rounded text-sm font-heading uppercase tracking-wider transition-colors border"
-            :class="form.direction === 'NB'
-              ? 'bg-ferry-light-blue text-ferry-dark-blue border-ferry-light-blue font-semibold'
-              : 'bg-white/5 text-ferry-light-gray border-white/20 hover:text-white hover:border-white/40'"
-            @click="form.direction = 'NB'"
-          >
-            Northbound
-          </button>
-          <button
-            type="button"
-            class="py-2 rounded text-sm font-heading uppercase tracking-wider transition-colors border"
-            :class="form.direction === 'SB'
-              ? 'bg-ferry-light-blue text-ferry-dark-blue border-ferry-light-blue font-semibold'
-              : 'bg-white/5 text-ferry-light-gray border-white/20 hover:text-white hover:border-white/40'"
-            @click="form.direction = 'SB'"
-          >
-            Southbound
-          </button>
-        </div>
-        <p v-if="errors.direction" class="text-xs text-red-400 mt-0.5">{{ errors.direction }}</p>
-      </div>
-
       <!-- Date picker -->
       <div class="flex flex-col gap-1">
         <label class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">
@@ -179,7 +149,7 @@ import { ref, computed, watch } from 'vue'
 const props = defineProps<{
   selectedRoutes?: string[]
   allRoutes?: string[]
-  savedForm?: { date: string; temp: number | null; precip: number | null; direction: string }
+  savedForm?: { date: string; temp: number | null; precip: number | null }
 }>()
 
 const emit = defineEmits<{
@@ -189,10 +159,9 @@ const emit = defineEmits<{
     date: string
     temp: number | null
     precip: number | null
-    direction: string
   }]
   'update:selectedRoutes': [routes: string[]]
-  'update:savedForm': [form: { date: string; temp: number | null; precip: number | null; direction: string }]
+  'update:savedForm': [form: { date: string; temp: number | null; precip: number | null }]
 }>()
 
 const routeSearch = ref('')
@@ -231,10 +200,9 @@ const form = ref({
   date: props.savedForm?.date ?? '',
   temp: props.savedForm?.temp ?? null as number | null,
   precip: props.savedForm?.precip ?? null as number | null,
-  direction: props.savedForm?.direction ?? 'NB',
 })
 
-const errors = ref({ date: '', temp: '', precip: '', direction: '' })
+const errors = ref({ date: '', temp: '', precip: '' })
 
 watch(form, (val) => {
   emit('update:savedForm', { ...val })
@@ -255,12 +223,11 @@ function formatDate(e: Event) {
 }
 
 function handleSubmit() {
-  errors.value = { date: '', temp: '', precip: '', direction: '' }
+  errors.value = { date: '', temp: '', precip: '' }
 
   if (!form.value.date || form.value.date.length < 10) errors.value.date = 'Required'
   if (form.value.temp === null || form.value.temp === undefined) errors.value.temp = 'Required'
   if (form.value.precip === null || form.value.precip === undefined) errors.value.precip = 'Required'
-  if (!form.value.direction) errors.value.direction = 'Required'
 
   if (Object.values(errors.value).some(e => e)) return
 
@@ -270,7 +237,6 @@ function handleSubmit() {
     date: form.value.date,
     temp: form.value.temp,
     precip: form.value.precip,
-    direction: form.value.direction,
   })
 }
 </script>

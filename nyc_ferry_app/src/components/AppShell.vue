@@ -24,7 +24,7 @@
           :routes="selectedRoutes.length ? selectedRoutes : allRoutes"
           :temp="savedForm.temp"
           :precip="savedForm.precip"
-          :direction="savedForm.direction"
+          :direction="activeDirection"
           :risk-level="riskLevel"
           :delay-probability="delayProbability"
           :prediction-loading="predictionLoading"
@@ -32,6 +32,7 @@
           :hourly-loading="hourlyLoading"
           @update:active-route="activeTabRoute = $event"
           @update:selected-hour="onHourSelected"
+          @update:direction="onDirectionToggle"
           @back="goToSystem"
         />
         <SidebarInput
@@ -90,11 +91,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import MapContainer from './ui/MapContainer.vue'
 import SidebarInput from './sections/SidebarInput.vue'
 import SidebarResults from './sections/SidebarResults.vue'
 import { getSeasonFromDate, getDaytypeFromDate, getLookupDefaults } from './predictionlookup.js'
+import { loadCache, lookupPrediction } from './predictionCache'
 
 type View = 'system' | 'route'
 type RiskLevel = 'low' | 'medium' | 'high' | null
@@ -120,7 +122,6 @@ const savedForm = ref({
   date: '',
   temp: null as number | null,
   precip: null as number | null,
-  direction: 'NB',
 })
 
 const ROUTE_NAME_MAP: Record<string, string> = {
@@ -134,91 +135,110 @@ const ROUTE_NAME_MAP: Record<string, string> = {
   'Soundview': 'SV',
 }
 
-let lastPayload: Record<string, unknown> | null = null
+// To switch to a live hosted API, restore fetchPrediction() calls in
+// handleSystemSubmit and onHourSelected, and update the URL below to your
+// deployed R Plumber endpoint (e.g. https://your-app.onrender.com/predict).
+//
+// let lastPayload: Record<string, unknown> | null = null
+//
+// async function fetchPrediction(payload: Record<string, unknown>) {
+//   const res = await fetch('http://localhost:8000/predict', {
+//     method: 'POST',
+//     headers: { 'Content-Type': 'application/json' },
+//     body: JSON.stringify(payload),
+//   })
+//   return res.json()
+// }
 
-async function fetchPrediction(payload: Record<string, unknown>) {
-  const res = await fetch('http://localhost:8000/predict', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+onMounted(async () => { await loadCache() })
+
+// Shared helper — runs main prediction + full hourly curve for the given inputs.
+// Called on initial submit and again whenever the direction toggle changes.
+function runPredictions(routeId: string, direction: string, season: string, daytype: string, temp: number, precip: number) {
+  riskLevel.value = null
+  delayProbability.value = null
+  hourlyCurve.value = []
+
+  const defaults   = getLookupDefaults(routeId, direction, season, daytype)
+  const medianHour = Math.round(defaults.prev_stop_sched_hour ?? 13)
+
+  const main = lookupPrediction(routeId, direction, season, daytype, temp, precip, medianHour)
+  riskLevel.value       = main.risk_level as 'low' | 'medium' | 'high'
+  delayProbability.value = main.delay_probability
+
+  hourlyCurve.value = HOURS.map(hour => {
+    const r = lookupPrediction(routeId, direction, season, daytype, temp, precip, hour)
+    return { hour, probability: r.delay_probability, risk: r.risk_level }
   })
-  return res.json()
+
+  // --- API version (restore for live hosted deployment) ---
+  // predictionLoading.value = true
+  // try {
+  //   const data = await fetchPrediction({ ...payload })
+  //   riskLevel.value = data.risk_level
+  //   delayProbability.value = data.delay_probability
+  // } catch (err) { console.error('Prediction API error:', err)
+  // } finally { predictionLoading.value = false }
+  // hourlyLoading.value = true
+  // try {
+  //   const results = await Promise.all(
+  //     HOURS.map(hour =>
+  //       fetchPrediction({ ...payload, prev_stop_sched_hour_override: hour })
+  //         .then(d => ({ hour, probability: d.delay_probability, risk: d.risk_level }))
+  //         .catch(() => ({ hour, probability: 0, risk: 'low' }))
+  //     )
+  //   )
+  //   hourlyCurve.value = results
+  // } catch (err) { console.error('Hourly curve error:', err)
+  // } finally { hourlyLoading.value = false }
 }
 
-async function handleSystemSubmit(values: {
+function handleSystemSubmit(values: {
   route: string
   routes: string[]
   date: string
   temp: number | null
   precip: number | null
-  direction: string
 }) {
   selectedRoute.value = values.routes[0] ?? values.route ?? undefined
-  selectedDate.value = values.date
-  view.value = 'route'
+  selectedDate.value  = values.date
+  view.value          = 'route'
   mapRef.value?.fitToRoutes(values.routes, 680)
 
-  const season = getSeasonFromDate(values.date)
+  const season  = getSeasonFromDate(values.date)
   const daytype = getDaytypeFromDate(values.date)
   const fullName = values.routes[0] ?? values.route ?? ''
-  const routeId = ROUTE_NAME_MAP[fullName] ?? fullName ?? 'ER'
-  const defaults = getLookupDefaults(routeId, values.direction, season, daytype)
+  const routeId  = ROUTE_NAME_MAP[fullName] ?? fullName ?? 'ER'
 
-  const payload = {
-    route_id: routeId,
-    direction: values.direction,
-    schedule_season: season,
-    schedule_daytype: daytype,
-    env_temperature_f: values.temp,
-    env_precipitation_pct: values.precip,
-    ...defaults,
-  }
-
-  lastPayload = payload
-
-  // Main prediction
-  predictionLoading.value = true
-  riskLevel.value = null
-  delayProbability.value = null
-  hourlyCurve.value = []
-
-  try {
-    const data = await fetchPrediction(payload)
-    riskLevel.value = data.risk_level
-    delayProbability.value = data.delay_probability
-  } catch (err) {
-    console.error('Prediction API error:', err)
-  } finally {
-    predictionLoading.value = false
-  }
-
-  // Hourly curve — fire all 17 calls in parallel
-  hourlyLoading.value = true
-  try {
-    const results = await Promise.all(
-      HOURS.map(hour =>
-        fetchPrediction({ ...payload, prev_stop_sched_hour_override: hour })
-          .then(d => ({ hour, probability: d.delay_probability, risk: d.risk_level }))
-          .catch(() => ({ hour, probability: 0, risk: 'low' }))
-      )
-    )
-    hourlyCurve.value = results
-  } catch (err) {
-    console.error('Hourly curve error:', err)
-  } finally {
-    hourlyLoading.value = false
-  }
+  runPredictions(routeId, activeDirection.value, season, daytype, values.temp ?? 60, values.precip ?? 0)
 }
 
-async function onHourSelected(hour: number) {
-  if (!lastPayload) return
-  try {
-    const data = await fetchPrediction({ ...lastPayload, prev_stop_sched_hour_override: hour })
-    riskLevel.value = data.risk_level
-    delayProbability.value = data.delay_probability
-  } catch (err) {
-    console.error('Hour prediction error:', err)
-  }
+function onDirectionToggle(direction: 'NB' | 'SB') {
+  activeDirection.value = direction
+  if (view.value !== 'route' || !savedForm.value.date) return
+  const season  = getSeasonFromDate(savedForm.value.date)
+  const daytype = getDaytypeFromDate(savedForm.value.date)
+  const routeName = activeTabRoute.value ?? selectedRoute.value ?? ''
+  const routeId = (ROUTE_NAME_MAP[routeName] ?? routeName) || 'ER'
+  runPredictions(routeId, direction, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0)
+}
+
+function onHourSelected(hour: number) {
+  if (!selectedRoute.value || !savedForm.value.date) return
+  const season  = getSeasonFromDate(savedForm.value.date)
+  const daytype = getDaytypeFromDate(savedForm.value.date)
+  const routeId = ROUTE_NAME_MAP[selectedRoute.value] ?? selectedRoute.value ?? 'ER'
+  const result  = lookupPrediction(routeId, activeDirection.value, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0, hour)
+  riskLevel.value        = result.risk_level as 'low' | 'medium' | 'high'
+  delayProbability.value = result.delay_probability
+
+  // --- API version (restore for live hosted deployment) ---
+  // if (!lastPayload) return
+  // try {
+  //   const data = await fetchPrediction({ ...lastPayload, prev_stop_sched_hour_override: hour })
+  //   riskLevel.value = data.risk_level
+  //   delayProbability.value = data.delay_probability
+  // } catch (err) { console.error('Hour prediction error:', err) }
 }
 
 watch(activeTabRoute, (val) => {
@@ -234,7 +254,7 @@ function goToSystem() {
   riskLevel.value = null
   delayProbability.value = null
   hourlyCurve.value = []
-  lastPayload = null
+  // lastPayload = null  // restore when switching back to API mode
   mapRef.value?.resetView()
 }
 </script>

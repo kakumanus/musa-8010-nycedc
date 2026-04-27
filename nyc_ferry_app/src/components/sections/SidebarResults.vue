@@ -1,38 +1,42 @@
 <template>
   <aside class="flex flex-col w-full h-full">
-    <div class="flex flex-col gap-4 flex-1 overflow-y-auto p-5 scrollbar-thin">
+
+    <!-- Fixed header — always visible regardless of scroll position -->
+    <div class="flex-shrink-0 px-5 pt-5 pb-3 flex flex-col gap-3 border-b border-white/10">
       <button
-        class="flex items-center gap-1.5 text-sm text-ferry-light-blue hover:text-white transition-colors"
+        class="flex items-center gap-1.5 text-sm text-ferry-light-blue hover:text-white transition-colors self-start"
         @click="$emit('back')"
       >
         ← Back
       </button>
 
-      <div>
-        <h2 class="font-heading text-2xl uppercase tracking-wide text-white">
-          {{ activeRoute ?? 'All Routes' }}
-        </h2>
-        <p class="text-xs text-ferry-light-gray mt-0.5">{{ formattedDate }}</p>
-        <p class="text-xs text-ferry-light-gray mt-0.5">Direction: {{ direction === 'NB' ? 'Northbound' : 'Southbound' }}</p>
-        <p class="text-xs text-ferry-light-gray mt-0.5">Temperature: {{ temp !== null ? `${temp}°F` : '—' }}</p>
-        <p class="text-xs text-ferry-light-gray mt-0.5">Precipitation: {{ precip !== null ? `${precip}%` : '—' }}</p>
-      </div>
+      <div class="flex items-start justify-between gap-4">
+        <div>
+          <h2 class="font-heading text-2xl uppercase tracking-wide text-white">
+            {{ activeRoute ?? 'All Routes' }}
+          </h2>
+          <p class="text-xs text-ferry-light-gray mt-0.5">{{ formattedDate }}</p>
+          <p class="text-xs text-ferry-light-gray mt-0.5">{{ temp !== null ? `${temp}°F` : '—' }} · {{ precip !== null ? `${precip}% precip` : '—' }}</p>
+        </div>
 
-      <!-- direction toggle -->
-      <div class="flex rounded-md overflow-hidden border border-white/10 self-start">
-        <button
-          v-for="d in (['SB', 'NB'] as const)"
-          :key="d"
-          class="px-4 py-1.5 text-xs font-heading uppercase tracking-wider transition-colors"
-          :class="direction === d
-            ? 'bg-ferry-light-blue text-ferry-dark-blue'
-            : 'text-ferry-light-gray hover:text-white'"
-          @click="direction = d"
-        >
-          {{ d === 'SB' ? '↓ Southbound' : '↑ Northbound' }}
-        </button>
+        <!-- direction toggle — pinned to header so it's always visible -->
+        <div class="flex rounded-md overflow-hidden border border-white/10 flex-shrink-0">
+          <button
+            v-for="d in (['SB', 'NB'] as const)"
+            :key="d"
+            class="px-4 py-1.5 text-xs font-heading uppercase tracking-wider transition-colors"
+            :class="direction === d
+              ? 'bg-ferry-light-blue text-ferry-dark-blue'
+              : 'text-ferry-light-gray hover:text-white'"
+            @click="$emit('update:direction', d)"
+          >
+            {{ d === 'SB' ? '↓ SB' : '↑ NB' }}
+          </button>
+        </div>
       </div>
+    </div>
 
+    <div class="flex flex-col gap-4 flex-1 overflow-y-auto p-5 scrollbar-thin">
       <div class="flex flex-col gap-3">
 
         <!-- delay risk card -->
@@ -343,6 +347,7 @@ const emit = defineEmits<{
   back: []
   'update:activeRoute': [route: string | null]
   'update:selectedHour': [hour: number]
+  'update:direction': [direction: 'NB' | 'SB']
 }>()
 
 const activeRoute = ref<string | null>(props.routes?.[0] ?? null)
