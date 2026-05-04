@@ -2,7 +2,7 @@
   <aside class="flex flex-col gap-4 w-full h-full overflow-y-auto p-5">
     <div>
       <h2 class="font-heading text-2xl uppercase tracking-wide text-white">Delay Prediction Form</h2>
-      <p class="text-xs text-ferry-light-gray mt-0.5">Enter conditions to predict excessive delay risk</p>
+      <p class="text-xs text-ferry-light-gray mt-0.5">Enter conditions to predict excessive delay risk.</p>
     </div>
 
     <form class="flex flex-col gap-3" @submit.prevent="handleSubmit">
@@ -17,7 +17,7 @@
             class="text-xs text-ferry-light-gray hover:text-white"
             @mousedown.prevent="clearSelection"
           >
-            Clear all
+            Clear All
           </button>
         </div>
 
@@ -72,9 +72,18 @@
 
       <!-- Date picker -->
       <div class="flex flex-col gap-1">
-        <label class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">
-          Date
-        </label>
+        <div class="flex items-center justify-between">
+          <label class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">
+            Date
+          </label>
+          <button
+            type="button"
+            class="text-xs text-ferry-light-gray hover:text-white"
+            @click="fillMinDate"
+          >
+            In Two Days
+          </button>
+        </div>
         <input
           :value="form.date"
           type="text"
@@ -129,7 +138,7 @@
           Advanced Options
         </summary>
         <div class="mt-2 flex flex-col gap-2 pl-3 border-l border-white/10">
-          <p class="text-xs text-ferry-light-gray">Additional model parameters coming soon.</p>
+          <p class="text-xs text-ferry-light-gray">Additional model parameters programmed here.</p>
         </div>
       </details>
 
@@ -208,26 +217,74 @@ watch(form, (val) => {
   emit('update:savedForm', { ...val })
 }, { deep: true })
 
+let prevLength = 0
+
 function formatDate(e: Event) {
   const input = e.target as HTMLInputElement
-  let val = input.value.replace(/\D/g, '')
+  const raw = input.value.replace(/\D/g, '')
 
-  if (val.length >= 3 && val.length <= 4) {
-    val = val.slice(0, 2) + '/' + val.slice(2)
-  } else if (val.length >= 5) {
-    val = val.slice(0, 2) + '/' + val.slice(2, 4) + '/' + val.slice(4, 8)
+  // Only auto-format when typing forward, not when editing/deleting
+  if (input.value.length < prevLength) {
+    prevLength = input.value.length
+    form.value.date = input.value
+    return
   }
 
+  let val = raw
+  if (raw.length >= 3 && raw.length <= 4) {
+    val = raw.slice(0, 2) + '/' + raw.slice(2)
+  } else if (raw.length >= 5) {
+    val = raw.slice(0, 2) + '/' + raw.slice(2, 4) + '/' + raw.slice(4, 8)
+  }
+
+  prevLength = val.length
   form.value.date = val
   input.value = val
+}
+
+function getMinDate(): Date {
+  const d = new Date()
+  d.setHours(0, 0, 0, 0)
+  d.setDate(d.getDate() + 2)
+  return d
+}
+
+function fillMinDate() {
+  const d = getMinDate()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const year = d.getFullYear()
+  const formatted = `${month}/${day}/${year}`
+  form.value.date = formatted
+  prevLength = formatted.length
 }
 
 function handleSubmit() {
   errors.value = { date: '', temp: '', precip: '' }
 
-  if (!form.value.date || form.value.date.length < 10) errors.value.date = 'Required'
-  if (form.value.temp === null || form.value.temp === undefined) errors.value.temp = 'Required'
-  if (form.value.precip === null || form.value.precip === undefined) errors.value.precip = 'Required'
+  if (!form.value.date || form.value.date.length < 10) {
+    errors.value.date = 'Required.'
+  } else {
+    const [month, day, year] = form.value.date.split('/').map(Number)
+
+    const entered = new Date(year, month - 1, day)
+    const isRealDate =
+      entered.getFullYear() === year &&
+      entered.getMonth() === month - 1 &&
+      entered.getDate() === day
+
+    if (!isRealDate) {
+      errors.value.date = 'Please enter a valid date.'
+    } else {
+      entered.setHours(0, 0, 0, 0)
+      if (entered < getMinDate()) {
+        errors.value.date = 'Date must be at least two days from today'
+      }
+    }
+  }
+
+  if (form.value.temp === null || form.value.temp === undefined) errors.value.temp = 'Required.'
+  if (form.value.precip === null || form.value.precip === undefined) errors.value.precip = 'Required.'
 
   if (Object.values(errors.value).some(e => e)) return
 

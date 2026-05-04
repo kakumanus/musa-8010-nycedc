@@ -61,7 +61,7 @@
           </div>
 
           <template v-else-if="hourlyCurve.length">
-            <svg viewBox="0 0 260 80" class="w-full" xmlns="http://www.w3.org/2000/svg">
+            <svg viewBox="0 0 260 80" class="w-full px-2" xmlns="http://www.w3.org/2000/svg">
               <line x1="0" y1="20" x2="260" y2="20" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
               <line x1="0" y1="40" x2="260" y2="40" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
               <line x1="0" y1="60" x2="260" y2="60" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
@@ -70,14 +70,17 @@
               <rect x="0" :y="probToY(0.3)" width="260" :height="80 - probToY(0.3)" fill="rgba(34,197,94,0.20)" />
               <path :d="areaPath" fill="rgba(99,179,237,0.15)" />
               <path :d="linePath" fill="none" stroke="#63b3ed" stroke-width="1.5" stroke-linejoin="round" />
-              <circle
+              <!-- vertical scrubber line aligned with slider -->
+              <line
                 v-if="selectedHour !== null"
-                :cx="hourToX(selectedHour)"
-                :cy="probToY(hourlyCurve.find(p => p.hour === selectedHour)?.probability ?? 0)"
-                r="4"
-                :fill="selectedDotColor"
-                stroke="white"
-                stroke-width="1.5"
+                :x1="((selectedHour - hourlyCurve[0].hour) / (hourlyCurve[hourlyCurve.length - 1].hour - hourlyCurve[0].hour)) * CHART_W"
+                :x2="((selectedHour - hourlyCurve[0].hour) / (hourlyCurve[hourlyCurve.length - 1].hour - hourlyCurve[0].hour)) * CHART_W"
+                y1="0"
+                y2="80"
+                :stroke="selectedLineColor"
+                stroke-width="1"
+                stroke-dasharray="3 3"
+                opacity="0.5"
               />
             </svg>
 
@@ -98,8 +101,8 @@
               </div>
             </div>
 
-            <!-- hourly stats card -->
-            <div v-if="selectedHour !== null && hourlyStats" class="mt-1 rounded-lg bg-white/5 border border-white/10 p-3 flex flex-col gap-2">
+            <!-- hourly stats card — only shown for a specific route, not All -->
+            <div v-if="activeRoute && selectedHour !== null && hourlyStats" class="mt-1 rounded-lg bg-white/5 border border-white/10 p-3 flex flex-col gap-2">
               <p class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">{{ formatHour(selectedHour) }} Conditions</p>
               <div class="grid grid-cols-3 gap-2">
                 <div class="flex flex-col gap-0.5">
@@ -124,7 +127,7 @@
             </div>
 
             <!-- route summary card -->
-            <div v-if="activeRoute && routeSummary" class="mt-1 rounded-lg bg-white/5 border border-white/10 p-3 flex flex-col gap-2">
+            <div v-if="routeSummary" class="mt-1 rounded-lg bg-white/5 border border-white/10 p-3 flex flex-col gap-2">
               <p class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">Route Summary</p>
               <div class="grid grid-cols-2 gap-2">
                 <div v-if="dailyDelayRiskPct !== null" class="flex flex-col gap-0.5">
@@ -364,7 +367,7 @@ const areaPath = computed(() => {
   return `${line} L${hourToX(last.hour).toFixed(1)},${CHART_H} L${hourToX(first.hour).toFixed(1)},${CHART_H} Z`
 })
 
-const selectedDotColor = computed(() => {
+const selectedLineColor = computed(() => {
   const point = props.hourlyCurve?.find(p => p.hour === selectedHour.value)
   if (!point) return '#63b3ed'
   if (point.risk === 'high') return '#f87171'
@@ -372,21 +375,34 @@ const selectedDotColor = computed(() => {
   return '#4ade80'
 })
 
+// helper: which route IDs to aggregate over
+const activeRouteIds = computed(() => {
+  if (activeRoute.value) return [ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value]
+  return (props.routes ?? []).map(r => ROUTE_NAME_MAP[r] ?? r)
+})
+
+// helper: get weekday/weekend type from the selected date
+function getDaytype(): 'WEEKDAY' | 'WEEKEND' {
+  if (!props.date) return 'WEEKDAY'
+  const [month, day, year] = props.date.split('/').map(Number)
+  const dow = new Date(year, month - 1, day).getDay()
+  return (dow === 0 || dow === 6) ? 'WEEKEND' : 'WEEKDAY'
+}
+
 const hourlyStats = computed(() => {
-  if (selectedHour.value === null || !activeRoute.value) return null
-  const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
-  const staticData = HOURLY_STATS[routeId]?.[selectedHour.value] ?? null
-  if (!staticData) return null
+  if (selectedHour.value === null) return null
+  const ids = activeRouteIds.value
+  const entries = ids
+    .map(id => HOURLY_STATS[id]?.[selectedHour.value!])
+    .filter(Boolean) as { max_load_factor: number; vessel_capacity: number }[]
+  if (!entries.length) return null
 
-  let daytype = 'WEEKDAY'
-  if (props.date) {
-    const [month, day, year] = props.date.split('/').map(Number)
-    const dow = new Date(year, month - 1, day).getDay()
-    daytype = (dow === 0 || dow === 6) ? 'WEEKEND' : 'WEEKDAY'
-  }
+  const daytype = getDaytype()
+  const trips = ids.reduce((sum, id) => sum + (gtfsTripsPerHour.value[id]?.[daytype]?.[selectedHour.value!] ?? 0), 0)
+  const max_load_factor = Math.max(...entries.map(e => e.max_load_factor))
+  const vessel_capacity = Math.round(entries.reduce((s, e) => s + e.vessel_capacity, 0) / entries.length)
 
-  const trips = gtfsTripsPerHour.value[routeId]?.[daytype]?.[selectedHour.value] ?? null
-  return { ...staticData, avg_trips: trips }
+  return { max_load_factor, vessel_capacity, avg_trips: trips || null }
 })
 
 const highRiskHours = computed(() => {
@@ -395,34 +411,51 @@ const highRiskHours = computed(() => {
 })
 
 const routeSummary = computed(() => {
-  if (!activeRoute.value) return null
-  const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
-  const stats = HOURLY_STATS[routeId]
-  if (!stats) return null
+  const ids = activeRouteIds.value
+  if (!ids.length) return null
 
-  const entries = Object.entries(stats).map(([h, v]) => ({ hour: parseInt(h), ...v }))
-  if (!entries.length) return null
-
-  const peak = entries.reduce((a, b) => a.max_load_factor >= b.max_load_factor ? a : b)
-  const peakHour = formatHour(peak.hour)
-  const hoursOverCapacity = entries.filter(e => e.max_load_factor > 1.0).length
-  const avgLoad = entries.reduce((sum, e) => sum + e.max_load_factor, 0) / entries.length
-  const avgLoadClass = avgLoad >= 1.1 ? 'text-red-400' : avgLoad >= 0.9 ? 'text-yellow-400' : 'text-green-400'
-
-  let avgTrips: number | null = null
-  let daytype = 'WEEKDAY'
-  if (props.date) {
-    const [month, day, year] = props.date.split('/').map(Number)
-    const dow = new Date(year, month - 1, day).getDay()
-    daytype = (dow === 0 || dow === 6) ? 'WEEKEND' : 'WEEKDAY'
-  }
-  const tripsByHour = gtfsTripsPerHour.value[routeId]?.[daytype]
-  if (tripsByHour) {
-    const tripValues = Object.values(tripsByHour)
-    if (tripValues.length) {
-      avgTrips = Math.round(tripValues.reduce((s, v) => s + v, 0) / tripValues.length)
+  // Build a per-hour average load factor across all active routes
+  const hourMap: Record<number, { lfSum: number; count: number }> = {}
+  for (const id of ids) {
+    const stats = HOURLY_STATS[id]
+    if (!stats) continue
+    for (const [h, v] of Object.entries(stats)) {
+      const hour = parseInt(h)
+      if (!hourMap[hour]) hourMap[hour] = { lfSum: 0, count: 0 }
+      hourMap[hour].lfSum += v.max_load_factor
+      hourMap[hour].count++
     }
   }
+
+  const hourEntries = Object.entries(hourMap).map(([h, { lfSum, count }]) => ({
+    hour: parseInt(h),
+    avgLf: lfSum / count,
+  }))
+
+  if (!hourEntries.length) return null
+
+  // Peak hour = hour with highest average load factor across routes
+  const peak = hourEntries.reduce((a, b) => a.avgLf >= b.avgLf ? a : b)
+  const peakHour = formatHour(peak.hour)
+
+  // Hours over capacity = distinct hours where average load > 1.0
+  const hoursOverCapacity = hourEntries.filter(e => e.avgLf > 1.0).length
+
+  // Overall average load factor
+  const avgLoad = hourEntries.reduce((sum, e) => sum + e.avgLf, 0) / hourEntries.length
+  const avgLoadClass = avgLoad >= 1.1 ? 'text-red-400' : avgLoad >= 0.9 ? 'text-yellow-400' : 'text-green-400'
+
+  // Average trips per hour across routes
+  const daytype = getDaytype()
+  const totalTrips = ids.reduce((sum, id) => {
+    const byHour = gtfsTripsPerHour.value[id]?.[daytype]
+    return sum + (byHour ? Object.values(byHour).reduce((s, v) => s + v, 0) : 0)
+  }, 0)
+  const totalHours = ids.reduce((sum, id) => {
+    const byHour = gtfsTripsPerHour.value[id]?.[daytype]
+    return sum + (byHour ? Object.keys(byHour).length : 0)
+  }, 0)
+  const avgTrips = totalHours > 0 ? Math.round(totalTrips / totalHours) : null
 
   return { peakHour, hoursOverCapacity, avgLoad, avgLoadClass, avgTrips }
 })
@@ -437,16 +470,27 @@ const loadChartPadBottom = 12
 const loadChartHeight = 80
 
 const loadChartEntries = computed(() => {
-  if (!activeRoute.value) return []
-  const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
-  const stats = HOURLY_STATS[routeId]
-  if (!stats) return []
-  return Object.entries(stats)
-    .map(([h, v]) => ({
-      hour: parseInt(h),
-      lf: v.max_load_factor,
-      hourLabel: parseInt(h) < 12 ? `${h}a` : parseInt(h) === 12 ? '12p' : `${parseInt(h) - 12}p`,
-    }))
+  const ids = activeRouteIds.value
+  const hourMap: Record<number, { lfSum: number; count: number }> = {}
+  for (const id of ids) {
+    const stats = HOURLY_STATS[id]
+    if (!stats) continue
+    for (const [h, v] of Object.entries(stats)) {
+      const hour = parseInt(h)
+      if (!hourMap[hour]) hourMap[hour] = { lfSum: 0, count: 0 }
+      hourMap[hour].lfSum += v.max_load_factor
+      hourMap[hour].count++
+    }
+  }
+  return Object.entries(hourMap)
+    .map(([h, { lfSum, count }]) => {
+      const hour = parseInt(h)
+      return {
+        hour,
+        lf: lfSum / count,
+        hourLabel: hour < 12 ? `${h}a` : hour === 12 ? '12p' : `${hour - 12}p`,
+      }
+    })
     .sort((a, b) => a.hour - b.hour)
 })
 
@@ -469,13 +513,9 @@ function loadChartYScale(lf: number): number {
 }
 
 const overCapacityHours = computed(() => {
-  if (!activeRoute.value) return []
-  const routeId = ROUTE_NAME_MAP[activeRoute.value] ?? activeRoute.value
-  const stats = HOURLY_STATS[routeId]
-  if (!stats) return []
-  return Object.entries(stats)
-    .filter(([, v]) => v.max_load_factor > 1.0)
-    .map(([h]) => parseInt(h))
+  return loadChartEntries.value
+    .filter(e => e.lf > 1.0)
+    .map(e => e.hour)
     .sort((a, b) => a - b)
 })
 
@@ -548,7 +588,6 @@ watch(() => props.hourlyCurve, (val) => {
 </script>
 
 <style scoped>
-/* Scrollbar */
 .overflow-y-auto::-webkit-scrollbar {
   width: 4px;
 }
@@ -566,13 +605,11 @@ watch(() => props.hourlyCurve, (val) => {
   background: rgba(255, 255, 255, 0.3);
 }
 
-/* Firefox */
 .overflow-y-auto {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
 }
 
-/* Slider */
 .slider-custom {
   -webkit-appearance: none;
   appearance: none;
