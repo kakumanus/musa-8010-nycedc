@@ -1,0 +1,189 @@
+---
+title: "Train Final RF Model Clean"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+options(scipen = 999, dplyr.summarise.inform = FALSE)
+```
+
+```{r packages}
+required_pkgs <- c("tidyverse", "tidymodels", "ranger", "arrow")
+
+missing_pkgs <- setdiff(required_pkgs, rownames(installed.packages()))
+if (length(missing_pkgs) > 0) {
+  stop("Missing required packages: ", paste(missing_pkgs, collapse = ", "))
+}
+
+invisible(lapply(required_pkgs, function(pkg) {
+  suppressPackageStartupMessages(library(pkg, character.only = TRUE))
+}))
+
+tidymodels::tidymodels_prefer()
+set.seed(7900)
+```
+
+```{r paths}
+input_feature_path <- "C:/Data/Spring 2026/CPLN 7900/explore/predictive_modeling_final_handoff/01_feature_table/final_predictive_feature_table.parquet"
+
+if (!file.exists(input_feature_path)) {
+  stop("Final predictive feature table parquet not found: ", input_feature_path)
+}
+
+out_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/final_model_training_clean"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+out_model_rds <- file.path(out_dir, "final_rf_model_workflow.rds")
+```
+
+```{r load-final-feature-table}
+final_tbl <- arrow::read_parquet(input_feature_path) %>%
+  as_tibble()
+
+stopifnot(nrow(final_tbl) > 0, ncol(final_tbl) > 0)
+
+if (!"trip_date" %in% names(final_tbl)) {
+  stop("trip_date is required in the final feature table.")
+}
+```
+
+```{r predictors-and-target}
+final_predictors <- c(
+  "alightings_lag_7d",
+  "boardings_lag_7d",
+  "curr_stop_shared_stop_flag",
+  "curr_vessel_count_lag_7d",
+  "direction",
+  "expected_water_min",
+  "is_terminal_stop",
+  "planned_turnaround_gap_min",
+  "prev_stop_sched_hour",
+  "prev_stop_shared_stop_flag",
+  "prev_vessel_count_lag_7d",
+  "schedule_daytype",
+  "schedule_season",
+  "scheduled_headway_min",
+  "stop_sequence",
+  "vessel_capacity",
+  "vessel_trip_seq_in_chain",
+  "env_battery_water_level_obs",
+  "env_narrows_current_obs",
+  "env_precipitation_mm",
+  "env_temperature_c",
+  "env_visibility_m",
+  "env_wind_speed_mps",
+  "from_stop_id",
+  "to_stop_id",
+  "segment_hourly_vessel_count_all"
+)
+
+categorical_predictors <- c(
+  "curr_stop_shared_stop_flag",
+  "direction",
+  "is_terminal_stop",
+  "prev_stop_shared_stop_flag",
+  "schedule_daytype",
+  "schedule_season",
+  "from_stop_id",
+  "to_stop_id"
+)
+
+required_columns <- c(
+  "trip_date",
+  final_predictors,
+  "lateness_vs_original_schedule_min"
+)
+
+missing_columns <- setdiff(required_columns, names(final_tbl))
+if (length(missing_columns) > 0) {
+  stop("Missing required columns: ", paste(missing_columns, collapse = ", "))
+}
+
+model_tbl <- final_tbl %>%
+  mutate(
+    trip_date = as.Date(trip_date),
+    delay_gt_10 = if_else(
+      lateness_vs_original_schedule_min > 10,
+      "yes",
+      "no",
+      missing = "no"
+    ) %>%
+      factor(levels = c("no", "yes"))
+  ) %>%
+  select(trip_date, all_of(final_predictors), delay_gt_10) %>%
+  mutate(
+    across(
+      all_of(categorical_predictors),
+      ~ as.factor(as.character(.x))
+    )
+  )
+
+stopifnot(all(final_predictors %in% names(model_tbl)))
+stopifnot("delay_gt_10" %in% names(model_tbl))
+stopifnot(all(vapply(model_tbl[categorical_predictors], is.factor, logical(1))))
+```
+
+```{r train-validation-test-split}
+max_date <- max(model_tbl$trip_date, na.rm = TRUE)
+
+test_start <- max_date - 30
+val_start <- test_start - 30
+
+train_full <- model_tbl %>%
+  filter(trip_date < val_start)
+
+validation <- model_tbl %>%
+  filter(trip_date >= val_start, trip_date < test_start)
+
+test <- model_tbl %>%
+  filter(trip_date >= test_start)
+
+stopifnot(nrow(train_full) > 0)
+stopifnot(nrow(validation) > 0)
+stopifnot(nrow(test) > 0)
+stopifnot(n_distinct(train_full$delay_gt_10) == 2)
+```
+
+```{r recipe-and-model}
+rf_recipe <- recipe(
+  delay_gt_10 ~ .,
+  data = train_full %>%
+    select(all_of(final_predictors), delay_gt_10)
+) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_novel(all_nominal_predictors()) %>%
+  step_zv(all_predictors())
+
+rf_spec <- rand_forest(
+  mode = "classification",
+  trees = 1500,
+  mtry = 5,
+  min_n = 25
+) %>%
+  set_engine(
+    "ranger",
+    importance = "impurity",
+    probability = TRUE,
+    splitrule = "gini",
+    num.threads = max(1L, parallel::detectCores(logical = FALSE) - 1L)
+  )
+```
+
+```{r fit-and-save-final-workflow}
+final_rf_workflow <- workflow() %>%
+  add_recipe(rf_recipe) %>%
+  add_model(rf_spec) %>%
+  fit(
+    data = train_full %>%
+      select(all_of(final_predictors), delay_gt_10)
+  )
+
+saveRDS(final_rf_workflow, out_model_rds)
+
+loaded_workflow <- readRDS(out_model_rds)
+stopifnot(inherits(loaded_workflow, "workflow"))
+
+message("Final RF workflow saved: ", out_model_rds)
+```
+
