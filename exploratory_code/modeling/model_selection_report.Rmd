@@ -1,0 +1,190 @@
+---
+title: "Predictive Model Selection"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(yardstick)
+  library(scales)
+  library(knitr)
+})
+
+model_selection_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/final/final_delivery_package/01_submission_materials/model_selection"
+raw_model_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/final/final_delivery_package/02_non_submission_work/model_selection_final_models"
+
+baseline_file <- file.path(model_selection_dir, "baseline_model_family_comparison.csv")
+prediction_file <- file.path(raw_model_dir, "final_rf_xgb_test_predictions.csv")
+importance_file <- file.path(model_selection_dir, "final_rf_top10_feature_importance.csv")
+
+fig_baseline <- file.path(model_selection_dir, "baseline_validation_roc_auc_bar.png")
+fig_pr <- file.path(model_selection_dir, "final_rf_xgb_pr_curve.png")
+fig_importance <- file.path(model_selection_dir, "final_rf_top10_feature_importance.png")
+
+threshold_source_note <- "Test predictions were used for the recall?0.20 operating-point table because validation prediction probabilities were not available in the final delivery package."
+rf_xgb_highlight_note <- "Yellow shading marks recall ranges where RF has higher precision than XGBoost and at least one model has precision >= 0.10."
+```
+
+# Baseline Model-Family Comparison
+
+We used a chronological train / validation / test split. The most recent 30 days were held out as the test set, the previous 30 days were used as validation, and earlier observations were used for training. This matches the operational setting where future trips are predicted from historical data.
+
+The baseline screen compared five model families: Logistic Regression, SVM, DNN, Random Forest, and XGBoost. SVM used a capped 20,000-row stratified training sample, so it should be interpreted as lightweight screening evidence. The baseline screen supported carrying forward Random Forest and XGBoost for focused finalist comparison.
+
+```{r baseline-plot, fig.cap="Validation ROC-AUC from the baseline screen. SVM used a capped training sample and is included as lightweight screening evidence."}
+if (!file.exists(baseline_file)) {
+  warning("Missing baseline comparison file: ", baseline_file)
+} else {
+  baseline_tbl <- read_csv(baseline_file, show_col_types = FALSE) %>%
+    mutate(model_family = fct_reorder(model_family, validation_roc_auc))
+
+  baseline_plot <- ggplot(baseline_tbl, aes(x = validation_roc_auc, y = model_family)) +
+    geom_col(fill = "#1A9988", width = 0.68) +
+    scale_x_continuous(labels = percent_format(accuracy = 1), limits = c(0, NA)) +
+    labs(title = "Baseline Model-Family Screen", x = "Validation ROC-AUC", y = NULL) +
+    theme_minimal(base_size = 15) +
+    theme(plot.title = element_text(face = "bold", size = 18), panel.grid.minor = element_blank())
+
+  ggsave(fig_baseline, baseline_plot, width = 8.5, height = 5.5, dpi = 300)
+  print(baseline_plot)
+}
+```
+
+# Final RF vs XGBoost Comparison
+
+After the baseline screen, we focused on Random Forest and XGBoost. Both model families can capture nonlinear relationships and interactions among schedule structure, stop context, lagged demand, vessel traffic, and environmental conditions.
+
+The final tuning process used `trees = 1500` as the practical central setting. Around that tree count, RF tuning mainly adjusted `mtry` and `min_n`. XGBoost tuning adjusted tree depth, `min_n`, learning rate, loss reduction, and feature sampling. The final comparison retained one RF operational candidate and one XGBoost benchmark candidate.
+
+XGBoost remains a strong predictive benchmark, but the dashboard use case emphasizes conservative alerting rather than global ranking alone. In the higher-precision region, Random Forest provides a more useful recall balance, so we select RF as the operational model and retain XGBoost as the benchmark.
+
+```{r pr-curve, fig.cap="Yellow shading marks recall ranges where RF has higher precision than XGBoost."}
+if (!file.exists(prediction_file)) {
+  warning("Missing final RF/XGB prediction file: ", prediction_file)
+} else {
+  pred_tbl <- read_csv(prediction_file, show_col_types = FALSE) %>%
+    mutate(delay_gt_10 = factor(delay_gt_10, levels = c("no", "yes")))
+
+  pr_tbl <- bind_rows(
+    pred_tbl %>% transmute(model = "Final RF", delay_gt_10, .pred_yes = rf_pred_yes) %>%
+      group_by(model) %>%
+      pr_curve(truth = delay_gt_10, .pred_yes, event_level = "second"),
+    pred_tbl %>% transmute(model = "Final XGB", delay_gt_10, .pred_yes = xgb_pred_yes) %>%
+      group_by(model) %>%
+      pr_curve(truth = delay_gt_10, .pred_yes, event_level = "second")
+  )
+
+  prep_curve <- function(dat, model_name) {
+    dat %>%
+      filter(model == model_name, is.finite(recall), is.finite(precision)) %>%
+      group_by(recall) %>%
+      summarise(precision = max(precision, na.rm = TRUE), .groups = "drop") %>%
+      arrange(recall)
+  }
+
+  interp_precision <- function(curve, recall_grid) {
+    approx(curve$recall, curve$precision, xout = recall_grid, rule = 2, ties = "ordered")$y
+  }
+
+  rf_curve <- prep_curve(pr_tbl, "Final RF")
+  xgb_curve <- prep_curve(pr_tbl, "Final XGB")
+  max_shared_recall <- min(max(rf_curve$recall, na.rm = TRUE), max(xgb_curve$recall, na.rm = TRUE))
+  recall_grid <- seq(0, max_shared_recall, length.out = 600)
+
+  highlight_grid <- tibble(
+    recall = recall_grid,
+    rf_precision = interp_precision(rf_curve, recall_grid),
+    xgb_precision = interp_precision(xgb_curve, recall_grid)
+  ) %>%
+    mutate(
+      high_precision_region = pmax(rf_precision, xgb_precision, na.rm = TRUE) >= 0.10,
+      rf_above_xgb = rf_precision > xgb_precision,
+      highlight = rf_above_xgb & high_precision_region
+    )
+
+  highlight_fallback_used <- !any(highlight_grid$highlight, na.rm = TRUE)
+  if (highlight_fallback_used) {
+    highlight_grid <- highlight_grid %>% mutate(highlight = rf_above_xgb)
+    rf_xgb_highlight_note <- "No RF-above-XGB intervals met the precision >= 0.10 rule, so the plot highlights all recall ranges where RF precision is above XGBoost."
+  }
+
+  highlight_intervals <- highlight_grid %>%
+    mutate(run_id = cumsum(highlight != lag(highlight, default = first(highlight)))) %>%
+    filter(highlight) %>%
+    group_by(run_id) %>%
+    summarise(xmin = min(recall), xmax = max(recall), .groups = "drop") %>%
+    filter(xmax > xmin)
+
+  pr_plot <- ggplot(pr_tbl, aes(x = recall, y = precision, color = model)) +
+    geom_rect(
+      data = highlight_intervals,
+      aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 1),
+      inherit.aes = FALSE,
+      fill = "#F2E8CF",
+      alpha = 0.55
+    ) +
+    geom_path(linewidth = 1.15) +
+    scale_color_manual(values = c("Final RF" = "#D95F59", "Final XGB" = "#1A9988")) +
+    scale_x_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+    scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, NA)) +
+    labs(title = "Final RF vs XGBoost Precision-Recall Curve", x = "Recall", y = "Precision", color = NULL) +
+    theme_minimal(base_size = 15) +
+    theme(plot.title = element_text(face = "bold", size = 18), panel.grid.minor = element_blank(), legend.position = "bottom")
+
+  ggsave(fig_pr, pr_plot, width = 8.5, height = 5.5, dpi = 300)
+  print(pr_plot)
+}
+```
+
+# Final RF Feature Importance
+
+We inspected feature importance from the final Random Forest model to understand what types of advance-available information the operational model relies on. This importance is model-based and descriptive; it is not a causal estimate.
+
+The top features combine environmental / water-condition variables and recurring operational patterns.
+
+```{r feature-importance}
+if (!file.exists(importance_file)) {
+  warning("Missing RF feature importance file: ", importance_file)
+} else {
+  importance_tbl <- read_csv(importance_file, show_col_types = FALSE) %>%
+    arrange(desc(importance)) %>%
+    slice_head(n = 10) %>%
+    mutate(
+      display_label = recode(
+        feature,
+        segment_hourly_vessel_count_all = "Segment vessel count, 7-day lag",
+        boardings_lag_7d = "Boardings, 7-day lag",
+        alightings_lag_7d = "Alightings, 7-day lag",
+        curr_vessel_count_lag_7d = "Current-stop vessel count, 7-day lag",
+        prev_vessel_count_lag_7d = "Previous-stop vessel count, 7-day lag",
+        env_temperature_c = "Temperature",
+        env_battery_water_level_obs = "Battery water level",
+        env_narrows_current_obs = "Narrows current",
+        env_precipitation_mm = "Precipitation",
+        env_visibility_m = "Visibility",
+        env_wind_speed_mps = "Wind speed",
+        expected_water_min = "Expected water time",
+        planned_turnaround_gap_min = "Planned turnaround gap",
+        prev_stop_sched_hour = "Scheduled hour",
+        .default = str_to_sentence(str_replace_all(feature, "_", " "))
+      )
+    )
+
+  importance_plot <- ggplot(importance_tbl, aes(x = importance, y = fct_reorder(display_label, importance))) +
+    geom_col(fill = "#1A9988", width = 0.72) +
+    labs(title = "Final RF Feature Importance", x = "Importance", y = NULL) +
+    theme_minimal(base_size = 15) +
+    theme(plot.title = element_text(face = "bold", size = 18), panel.grid.minor = element_blank())
+
+  ggsave(fig_importance, importance_plot, width = 8.5, height = 5.5, dpi = 300)
+  print(importance_plot)
+}
+```
+
+The final RF relies on a mix of environmental conditions, water-current context, and recurring operational demand/vessel-pattern features.
