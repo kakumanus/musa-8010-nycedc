@@ -1,0 +1,51 @@
+---
+title: "Build Prediction Feature Table"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+suppressPackageStartupMessages({
+  library(arrow)
+  library(readr)
+  library(dplyr)
+})
+```
+
+```{r paths}
+source_csv <- "C:/Data/Spring 2026/CPLN 7900/explore/predictive_feature_table_v2_clean/baseline_prediction_table_stop_level_v2.csv"
+source_parquet <- "C:/Data/Spring 2026/CPLN 7900/explore/predictive_feature_table_v2_clean/baseline_prediction_table_stop_level_v2.parquet"
+out_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/final/final_delivery_package/02_non_submission_work/feature_table_build"
+out_csv <- file.path(out_dir, "final_predictive_feature_table.csv")
+out_parquet <- file.path(out_dir, "final_predictive_feature_table.parquet")
+
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+stopifnot(file.exists(source_csv), file.exists(source_parquet))
+```
+
+```{r build-feature-table}
+feature_table <- arrow::read_parquet(source_parquet) %>% as_tibble()
+
+required_predictors <- c(
+  "alightings_lag_7d", "boardings_lag_7d", "curr_stop_shared_stop_flag",
+  "curr_vessel_count_lag_7d", "direction", "expected_water_min",
+  "is_terminal_stop", "planned_turnaround_gap_min", "prev_stop_sched_hour",
+  "prev_stop_shared_stop_flag", "prev_vessel_count_lag_7d", "schedule_daytype",
+  "schedule_season", "scheduled_headway_min", "stop_sequence", "vessel_capacity",
+  "vessel_trip_seq_in_chain", "env_battery_water_level_obs", "env_narrows_current_obs",
+  "env_precipitation_mm", "env_temperature_c", "env_visibility_m",
+  "env_wind_speed_mps", "from_stop_id", "to_stop_id", "segment_hourly_vessel_count_all"
+)
+
+required_columns <- c("trip_date", "lateness_vs_original_schedule_min", required_predictors)
+missing_columns <- setdiff(required_columns, names(feature_table))
+if (length(missing_columns) > 0) stop("Missing required columns: ", paste(missing_columns, collapse = ", "))
+stopifnot(nrow(feature_table) > 0)
+stopifnot(anyDuplicated(names(feature_table)) == 0)
+stopifnot("segment_hourly_vessel_count_all" %in% names(feature_table))
+stopifnot("prev_stop_sched_hour" %in% names(feature_table))
+
+readr::write_csv(feature_table, out_csv)
+arrow::write_parquet(feature_table, out_parquet)
+stopifnot(file.exists(out_csv), file.exists(out_parquet))
+```
