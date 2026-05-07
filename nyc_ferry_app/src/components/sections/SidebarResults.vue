@@ -318,7 +318,10 @@ async function loadGtfsStats() {
   gtfsTripsPerHour.value = result
 }
 
-onMounted(() => { loadGtfsStats() })
+onMounted(() => {
+  loadGtfsStats()
+  loadFerryData()
+})
 
 const ROUTE_NAME_MAP: Record<string, string> = {
   'Astoria': 'AS',
@@ -332,29 +335,74 @@ const ROUTE_NAME_MAP: Record<string, string> = {
   'Soundview': 'SV',
 }
 
-const HOURLY_STATS: Record<string, Record<number, { max_load_factor: number; vessel_capacity: number }>> = {"AS": {"6": {"max_load_factor": 0.3, "vessel_capacity": 299}, "7": {"max_load_factor": 0.79, "vessel_capacity": 299}, "8": {"max_load_factor": 0.9, "vessel_capacity": 299}, "9": {"max_load_factor": 0.75, "vessel_capacity": 299}, "10": {"max_load_factor": 0.9, "vessel_capacity": 299}, "11": {"max_load_factor": 1.0, "vessel_capacity": 299}, "12": {"max_load_factor": 1.23, "vessel_capacity": 299}, "13": {"max_load_factor": 1.0, "vessel_capacity": 299}, "14": {"max_load_factor": 1.0, "vessel_capacity": 299}, "15": {"max_load_factor": 1.0, "vessel_capacity": 299}, "16": {"max_load_factor": 1.17, "vessel_capacity": 299}, "17": {"max_load_factor": 1.0, "vessel_capacity": 299}, "18": {"max_load_factor": 1.0, "vessel_capacity": 299}, "19": {"max_load_factor": 1.0, "vessel_capacity": 299}, "20": {"max_load_factor": 1.0, "vessel_capacity": 299}, "21": {"max_load_factor": 1.0, "vessel_capacity": 299}, "22": {"max_load_factor": 0.61, "vessel_capacity": 299}}, "ER": {"6": {"max_load_factor": 0.61, "vessel_capacity": 150}, "7": {"max_load_factor": 1.0, "vessel_capacity": 150}, "8": {"max_load_factor": 1.04, "vessel_capacity": 150}, "9": {"max_load_factor": 1.0, "vessel_capacity": 150}, "10": {"max_load_factor": 1.03, "vessel_capacity": 150}, "11": {"max_load_factor": 1.07, "vessel_capacity": 150}, "12": {"max_load_factor": 1.05, "vessel_capacity": 150}, "13": {"max_load_factor": 1.14, "vessel_capacity": 150}, "14": {"max_load_factor": 1.39, "vessel_capacity": 150}, "15": {"max_load_factor": 1.13, "vessel_capacity": 150}, "16": {"max_load_factor": 1.25, "vessel_capacity": 150}, "17": {"max_load_factor": 1.2, "vessel_capacity": 150}, "18": {"max_load_factor": 1.09, "vessel_capacity": 150}, "19": {"max_load_factor": 1.02, "vessel_capacity": 150}, "20": {"max_load_factor": 1.06, "vessel_capacity": 150}, "21": {"max_load_factor": 1.01, "vessel_capacity": 150}, "22": {"max_load_factor": 1.01, "vessel_capacity": 150}}, "GI": {"9": {"max_load_factor": 0.03, "vessel_capacity": 350}, "10": {"max_load_factor": 0.59, "vessel_capacity": 150}, "11": {"max_load_factor": 1.0, "vessel_capacity": 150}, "12": {"max_load_factor": 1.0, "vessel_capacity": 150}, "13": {"max_load_factor": 1.0, "vessel_capacity": 150}, "14": {"max_load_factor": 1.0, "vessel_capacity": 150}, "15": {"max_load_factor": 1.0, "vessel_capacity": 150}, "16": {"max_load_factor": 1.0, "vessel_capacity": 150}, "17": {"max_load_factor": 1.0, "vessel_capacity": 150}, "18": {"max_load_factor": 0.98, "vessel_capacity": 350}}, "RR": {"9": {"max_load_factor": 0.92, "vessel_capacity": 350}, "11": {"max_load_factor": 0.0, "vessel_capacity": 350}, "12": {"max_load_factor": 0.79, "vessel_capacity": 350}, "14": {"max_load_factor": 0.39, "vessel_capacity": 350}, "15": {"max_load_factor": 0.17, "vessel_capacity": 350}, "16": {"max_load_factor": 0.02, "vessel_capacity": 350}, "17": {"max_load_factor": 0.85, "vessel_capacity": 350}, "18": {"max_load_factor": 0.36, "vessel_capacity": 350}}, "RW": {"6": {"max_load_factor": 0.61, "vessel_capacity": 150}, "7": {"max_load_factor": 0.92, "vessel_capacity": 150}, "8": {"max_load_factor": 0.83, "vessel_capacity": 150}, "9": {"max_load_factor": 1.0, "vessel_capacity": 150}, "10": {"max_load_factor": 1.17, "vessel_capacity": 150}, "11": {"max_load_factor": 1.17, "vessel_capacity": 150}, "12": {"max_load_factor": 1.17, "vessel_capacity": 150}, "13": {"max_load_factor": 1.17, "vessel_capacity": 150}, "14": {"max_load_factor": 1.11, "vessel_capacity": 150}, "15": {"max_load_factor": 1.0, "vessel_capacity": 150}, "16": {"max_load_factor": 1.1, "vessel_capacity": 150}, "17": {"max_load_factor": 1.17, "vessel_capacity": 150}, "18": {"max_load_factor": 1.17, "vessel_capacity": 150}, "19": {"max_load_factor": 1.16, "vessel_capacity": 150}, "20": {"max_load_factor": 1.17, "vessel_capacity": 150}, "21": {"max_load_factor": 0.94, "vessel_capacity": 350}, "22": {"max_load_factor": 0.78, "vessel_capacity": 350}}, "SB": {"6": {"max_load_factor": 0.12, "vessel_capacity": 150}, "7": {"max_load_factor": 0.53, "vessel_capacity": 150}, "8": {"max_load_factor": 0.75, "vessel_capacity": 150}, "9": {"max_load_factor": 1.4, "vessel_capacity": 150}, "10": {"max_load_factor": 1.0, "vessel_capacity": 150}, "11": {"max_load_factor": 1.02, "vessel_capacity": 150}, "12": {"max_load_factor": 1.17, "vessel_capacity": 150}, "13": {"max_load_factor": 1.17, "vessel_capacity": 150}, "14": {"max_load_factor": 1.03, "vessel_capacity": 150}, "15": {"max_load_factor": 1.0, "vessel_capacity": 150}, "16": {"max_load_factor": 1.02, "vessel_capacity": 150}, "17": {"max_load_factor": 1.17, "vessel_capacity": 150}, "18": {"max_load_factor": 1.05, "vessel_capacity": 150}, "19": {"max_load_factor": 1.0, "vessel_capacity": 150}, "20": {"max_load_factor": 1.0, "vessel_capacity": 150}, "21": {"max_load_factor": 1.0, "vessel_capacity": 150}, "22": {"max_load_factor": 0.48, "vessel_capacity": 150}}, "SG": {"6": {"max_load_factor": 0.44, "vessel_capacity": 150}, "7": {"max_load_factor": 0.8, "vessel_capacity": 150}, "8": {"max_load_factor": 0.63, "vessel_capacity": 150}, "9": {"max_load_factor": 1.0, "vessel_capacity": 150}, "10": {"max_load_factor": 0.93, "vessel_capacity": 150}, "11": {"max_load_factor": 0.68, "vessel_capacity": 150}, "12": {"max_load_factor": 0.59, "vessel_capacity": 150}, "13": {"max_load_factor": 0.83, "vessel_capacity": 150}, "14": {"max_load_factor": 0.71, "vessel_capacity": 150}, "15": {"max_load_factor": 0.99, "vessel_capacity": 150}, "16": {"max_load_factor": 1.0, "vessel_capacity": 150}, "17": {"max_load_factor": 1.0, "vessel_capacity": 150}, "18": {"max_load_factor": 0.79, "vessel_capacity": 150}, "19": {"max_load_factor": 0.77, "vessel_capacity": 150}, "20": {"max_load_factor": 0.75, "vessel_capacity": 150}, "21": {"max_load_factor": 0.75, "vessel_capacity": 150}}, "SV": {"6": {"max_load_factor": 0.83, "vessel_capacity": 299}, "7": {"max_load_factor": 0.75, "vessel_capacity": 299}, "8": {"max_load_factor": 0.71, "vessel_capacity": 299}, "9": {"max_load_factor": 0.73, "vessel_capacity": 299}, "10": {"max_load_factor": 1.0, "vessel_capacity": 299}, "11": {"max_load_factor": 1.01, "vessel_capacity": 299}, "12": {"max_load_factor": 1.13, "vessel_capacity": 299}, "13": {"max_load_factor": 1.1, "vessel_capacity": 299}, "14": {"max_load_factor": 1.23, "vessel_capacity": 299}, "15": {"max_load_factor": 1.16, "vessel_capacity": 299}, "16": {"max_load_factor": 1.11, "vessel_capacity": 299}, "17": {"max_load_factor": 1.0, "vessel_capacity": 299}, "18": {"max_load_factor": 1.0, "vessel_capacity": 299}, "19": {"max_load_factor": 1.07, "vessel_capacity": 299}, "20": {"max_load_factor": 1.17, "vessel_capacity": 299}, "21": {"max_load_factor": 0.95, "vessel_capacity": 299}, "22": {"max_load_factor": 0.69, "vessel_capacity": 299}}}
+const FERRY_LOAD_URL = 'https://raw.githubusercontent.com/kakumanus/musa-8010-nycedc/refs/heads/main/nyc_ferry_app/public/ferry_load_data.json'
 
-// Combine RR and SV into RS (Rockaway-Soundview)
-;(() => {
-  const RR = HOURLY_STATS['RR'] ?? {}
-  const SV = HOURLY_STATS['SV'] ?? {}
+const allLoadData = ref<{ route_id: string; date: string; hour: number; max_load_factor: number; vessel_capacity: number }[]>([])
+
+async function loadFerryData() {
+  const res = await fetch(FERRY_LOAD_URL)
+  const data = await res.json()
+  console.log('loaded rows:', data.length)
+  console.log('sample row:', data[0])
+  allLoadData.value = data
+}
+
+function getWindowDates(inputDate: string): Set<string> {
+  const [month, day, year] = inputDate.split('/').map(Number)
+  const target = new Date(year, month - 1, day)
+  const anchor = new Date(target)
+  anchor.setFullYear(anchor.getFullYear() - 1)
+
+  const dates = new Set<string>()
+  for (let offset = -14; offset <= 14; offset++) {
+    const d = new Date(anchor)
+    d.setDate(d.getDate() + offset)
+    if (d.getDay() === target.getDay()) {
+      dates.add(d.toISOString().split('T')[0])
+    }
+  }
+  return dates
+}
+
+const HOURLY_STATS = computed(() => {
+  if (!props.date || !allLoadData.value.length) return {}
+  const window = getWindowDates(props.date)
+
+  const result: Record<string, Record<number, { max_load_factor: number; vessel_capacity: number }>> = {}
+  for (const row of allLoadData.value) {
+    if (!window.has(row.date)) continue
+    if (!result[row.route_id]) result[row.route_id] = {}
+    const existing = result[row.route_id][row.hour]
+    if (!existing || row.max_load_factor > existing.max_load_factor) {
+      result[row.route_id][row.hour] = {
+        max_load_factor: row.max_load_factor,
+        vessel_capacity: row.vessel_capacity,
+      }
+    }
+  }
+
+  // Combine RR and SV into RS (Rockaway-Soundview)
+  const RR = result['RR'] ?? {}
+  const SV = result['SV'] ?? {}
   const allHours = new Set([...Object.keys(RR), ...Object.keys(SV)].map(Number))
-  HOURLY_STATS['RS'] = {}
+  result['RS'] = {}
   for (const hour of allHours) {
     const rrEntry = RR[hour]
     const svEntry = SV[hour]
     if (rrEntry && svEntry) {
-      HOURLY_STATS['RS'][hour] = {
+      result['RS'][hour] = {
         max_load_factor: (rrEntry.max_load_factor + svEntry.max_load_factor) / 2,
         vessel_capacity: Math.round((rrEntry.vessel_capacity + svEntry.vessel_capacity) / 2),
       }
     } else if (rrEntry) {
-      HOURLY_STATS['RS'][hour] = { ...rrEntry }
+      result['RS'][hour] = { ...rrEntry }
     } else if (svEntry) {
-      HOURLY_STATS['RS'][hour] = { ...svEntry }
+      result['RS'][hour] = { ...svEntry }
     }
   }
-})()
+
+  return result
+})
 
 const props = defineProps<{
   route?: string
@@ -433,7 +481,7 @@ const hourlyStats = computed(() => {
   if (selectedHour.value === null) return null
   const ids = activeRouteIds.value
   const entries = ids
-    .map(id => HOURLY_STATS[id]?.[selectedHour.value!])
+    .map(id => HOURLY_STATS.value[id]?.[selectedHour.value!])
     .filter(Boolean) as { max_load_factor: number; vessel_capacity: number }[]
   if (!entries.length) return null
 
@@ -454,10 +502,9 @@ const routeSummary = computed(() => {
   const ids = activeRouteIds.value
   if (!ids.length) return null
 
-  // Build a per-hour average load factor across all active routes
   const hourMap: Record<number, { lfSum: number; count: number }> = {}
   for (const id of ids) {
-    const stats = HOURLY_STATS[id]
+    const stats = HOURLY_STATS.value[id]
     if (!stats) continue
     for (const [h, v] of Object.entries(stats)) {
       const hour = parseInt(h)
@@ -474,18 +521,12 @@ const routeSummary = computed(() => {
 
   if (!hourEntries.length) return null
 
-  // Peak hour = hour with highest average load factor across routes
   const peak = hourEntries.reduce((a, b) => a.avgLf >= b.avgLf ? a : b)
   const peakHour = formatHour(peak.hour)
-
-  // Hours over capacity = distinct hours where average load > 1.0
   const hoursOverCapacity = hourEntries.filter(e => e.avgLf > 1.0).length
-
-  // Overall average load factor
   const avgLoad = hourEntries.reduce((sum, e) => sum + e.avgLf, 0) / hourEntries.length
   const avgLoadClass = avgLoad >= 1.1 ? 'text-red-400' : avgLoad >= 0.9 ? 'text-yellow-400' : 'text-green-400'
 
-  // Average trips per hour across routes
   const daytype = getDaytype()
   const totalTrips = ids.reduce((sum, id) => {
     const byHour = gtfsTripsPerHour.value[id]?.[daytype]
@@ -513,7 +554,7 @@ const loadChartEntries = computed(() => {
   const ids = activeRouteIds.value
   const hourMap: Record<number, { lfSum: number; count: number }> = {}
   for (const id of ids) {
-    const stats = HOURLY_STATS[id]
+    const stats = HOURLY_STATS.value[id]
     if (!stats) continue
     for (const [h, v] of Object.entries(stats)) {
       const hour = parseInt(h)
