@@ -1,5 +1,5 @@
 <template>
-  <div class="relative w-full h-full">
+  <div class="relative w-full h-full" @click="onRootClick">
     <MapContainer
       ref="mapRef"
       :view="view"
@@ -15,6 +15,7 @@
         'absolute top-4 bottom-4 left-4 z-10 flex flex-col rounded-lg overflow-hidden bg-ferry-dark-blue/90 backdrop-blur-sm border border-white/10 shadow-xl transition-[width] duration-300',
         view === 'route' ? 'w-[640px]' : 'w-80',
       ]"
+      @click.stop
     >
       <Transition name="sidebar" mode="out-in">
         <SidebarResults
@@ -33,6 +34,8 @@
           @update:active-route="activeTabRoute = $event"
           @update:selected-hour="onHourSelected"
           @update:direction="onDirectionToggle"
+          @update:active-hours="onActiveHoursUpdate"
+          @update:daily-risk="onDailyRiskUpdate"
           @back="goToSystem"
         />
         <SidebarInput
@@ -46,6 +49,50 @@
         />
       </Transition>
     </div>
+
+    <!-- route risk popup -->
+    <Transition name="popup">
+      <div
+        v-if="showRoutePopup && dailyRiskLevel"
+        ref="popupRef"
+        class="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center gap-2 px-8 py-4 rounded-xl border shadow-xl backdrop-blur-sm text-center min-w-[260px]"
+        :class="{
+          'bg-red-500/20 border-red-500/40':       dailyRiskLevel === 'high',
+          'bg-yellow-500/20 border-yellow-500/40':  dailyRiskLevel === 'medium',
+          'bg-green-500/20 border-green-500/40':    dailyRiskLevel === 'low',
+        }"
+        @click.stop
+      >
+        <p class="text-xs text-ferry-light-gray">{{ selectedDate }}</p>
+
+        <p class="font-heading text-2xl uppercase tracking-wide text-white">
+          {{ activeTabRoute ?? selectedRoute ?? 'All Routes' }}
+        </p>
+
+        <p
+          class="text-xl font-heading uppercase tracking-wide"
+          :class="{
+            'text-red-400':    dailyRiskLevel === 'high',
+            'text-yellow-400': dailyRiskLevel === 'medium',
+            'text-green-400':  dailyRiskLevel === 'low',
+          }"
+        >
+          {{ dailyRiskLevel === 'high' ? 'High' : dailyRiskLevel === 'medium' ? 'Medium' : 'Low' }} Delay Risk
+        </p>
+
+        <p class="text-xs text-ferry-light-gray">
+          {{ Math.round((dailyDelayProbability ?? 0) * 100) }}% daily probability
+        </p>
+
+        <button
+          class="absolute top-2 right-2 text-ferry-light-gray hover:text-white transition-colors text-xs leading-none"
+          aria-label="Dismiss"
+          @click.stop="showRoutePopup = false"
+        >
+          ✕
+        </button>
+      </div>
+    </Transition>
 
     <!-- methodology overlay -->
     <Transition name="overlay">
@@ -101,7 +148,7 @@ import { loadCache, lookupPrediction, getRoutePairs } from './predictionCache'
 type View = 'system' | 'route'
 type RiskLevel = 'low' | 'medium' | 'high' | null
 
-const HOURS = [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22]
+const DEFAULT_HOURS = [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22]
 
 const view = ref<View>('system')
 const selectedRoute = ref<string | undefined>(undefined)
@@ -112,11 +159,22 @@ const activeTabRoute = ref<string | null>(null)
 const activeDirection = ref<'NB' | 'SB'>('SB')
 const showMethodology = ref(false)
 const mapRef = ref<InstanceType<typeof MapContainer> | null>(null)
+
+// Slider-driven risk — updates as user scrubs through hours
 const riskLevel = ref<RiskLevel>(null)
 const delayProbability = ref<number | null>(null)
+
+// Daily summary risk — sourced from child's dailyDelayRiskPct, never touched by slider
+const dailyRiskLevel = ref<RiskLevel>(null)
+const dailyDelayProbability = ref<number | null>(null)
+
 const predictionLoading = ref(false)
 const hourlyCurve = ref<{ hour: number; probability: number; risk: string }[]>([])
 const hourlyLoading = ref(false)
+const activeHours = ref<number[]>(DEFAULT_HOURS)
+
+const showRoutePopup = ref(false)
+const popupRef = ref<HTMLElement | null>(null)
 
 const savedForm = ref({
   date: '',
@@ -124,24 +182,34 @@ const savedForm = ref({
   precip: null as number | null,
 })
 
-// To switch to a live hosted API, restore fetchPrediction() calls in
-// handleSystemSubmit and onHourSelected, and update the URL below to your
-// deployed R Plumber endpoint (e.g. https://your-app.onrender.com/predict).
-//
-// let lastPayload: Record<string, unknown> | null = null
-//
-// async function fetchPrediction(payload: Record<string, unknown>) {
-//   const res = await fetch('http://localhost:8000/predict', {
-//     method: 'POST',
-//     headers: { 'Content-Type': 'application/json' },
-//     body: JSON.stringify(payload),
-//   })
-//   return res.json()
-// }
+function triggerRoutePopup() {
+  showRoutePopup.value = false
+  requestAnimationFrame(() => { showRoutePopup.value = true })
+}
+
+function onRootClick() {
+  if (showRoutePopup.value) showRoutePopup.value = false
+}
+
+// Receives the averaged daily risk from the child's filteredCurve
+function onDailyRiskUpdate(risk: { level: 'low' | 'medium' | 'high'; probability: number }) {
+  dailyRiskLevel.value        = risk.level
+  dailyDelayProbability.value = risk.probability
+}
+
+function onActiveHoursUpdate(hours: number[]) {
+  if (!hours.length) return
+  activeHours.value = hours
+  if (view.value === 'route' && savedForm.value.date) {
+    const season    = getSeasonFromDate(savedForm.value.date)
+    const daytype   = getDaytypeFromDate(savedForm.value.date)
+    const routeName = activeTabRoute.value ?? selectedRoute.value ?? 'East River'
+    runPredictions(routeName, activeDirection.value, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0)
+  }
+}
 
 onMounted(async () => { await loadCache() })
 
-// Average delay probability across all stop-pair segments for a route.
 function avgSegments(pairs: [string, string][], direction: string, season: string, daytype: string, temp: number, precip: number, hour: number) {
   if (!pairs.length) return { delay_probability: 0, risk_level: 'low' as const }
   const probs = pairs.map(([from, to]) =>
@@ -152,43 +220,25 @@ function avgSegments(pairs: [string, string][], direction: string, season: strin
   return { delay_probability: avg, risk_level: risk as 'low' | 'medium' | 'high' }
 }
 
-// Shared helper — runs main prediction + full hourly curve for the given inputs.
-// Called on initial submit and again whenever the direction toggle changes.
 function runPredictions(routeName: string, direction: string, season: string, daytype: string, temp: number, precip: number) {
   riskLevel.value = null
   delayProbability.value = null
   hourlyCurve.value = []
 
   const pairs = getRoutePairs(routeName, direction)
-  const main  = avgSegments(pairs, direction, season, daytype, temp, precip, 13)
+  const hours = activeHours.value
+  const midHour = hours[Math.floor(hours.length / 2)] ?? 13
+  const main = avgSegments(pairs, direction, season, daytype, temp, precip, midHour)
+
+  // Slider-driven refs — initial value set here, then overwritten by onHourSelected
   riskLevel.value        = main.risk_level
   delayProbability.value = main.delay_probability
 
-  hourlyCurve.value = HOURS.map(hour => {
+  // Build full curve — child filters to active hours and emits the averaged daily risk
+  hourlyCurve.value = DEFAULT_HOURS.map(hour => {
     const r = avgSegments(pairs, direction, season, daytype, temp, precip, hour)
     return { hour, probability: r.delay_probability, risk: r.risk_level }
   })
-
-  // --- API version (restore for live hosted deployment) ---
-  // predictionLoading.value = true
-  // try {
-  //   const data = await fetchPrediction({ ...payload })
-  //   riskLevel.value = data.risk_level
-  //   delayProbability.value = data.delay_probability
-  // } catch (err) { console.error('Prediction API error:', err)
-  // } finally { predictionLoading.value = false }
-  // hourlyLoading.value = true
-  // try {
-  //   const results = await Promise.all(
-  //     HOURS.map(hour =>
-  //       fetchPrediction({ ...payload, prev_stop_sched_hour_override: hour })
-  //         .then(d => ({ hour, probability: d.delay_probability, risk: d.risk_level }))
-  //         .catch(() => ({ hour, probability: 0, risk: 'low' }))
-  //     )
-  //   )
-  //   hourlyCurve.value = results
-  // } catch (err) { console.error('Hourly curve error:', err)
-  // } finally { hourlyLoading.value = false }
 }
 
 function handleSystemSubmit(values: {
@@ -208,6 +258,7 @@ function handleSystemSubmit(values: {
   const routeName = values.routes[0] ?? values.route ?? 'East River'
 
   runPredictions(routeName, activeDirection.value, season, daytype, values.temp ?? 60, values.precip ?? 0)
+  triggerRoutePopup()
 }
 
 function onDirectionToggle(direction: 'NB' | 'SB') {
@@ -226,16 +277,9 @@ function onHourSelected(hour: number) {
   const routeName = activeTabRoute.value ?? selectedRoute.value ?? 'East River'
   const pairs     = getRoutePairs(routeName, activeDirection.value)
   const result    = avgSegments(pairs, activeDirection.value, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0, hour)
+  // Only update slider-driven refs — daily summary comes from child
   riskLevel.value        = result.risk_level
   delayProbability.value = result.delay_probability
-
-  // --- API version (restore for live hosted deployment) ---
-  // if (!lastPayload) return
-  // try {
-  //   const data = await fetchPrediction({ ...lastPayload, prev_stop_sched_hour_override: hour })
-  //   riskLevel.value = data.risk_level
-  //   delayProbability.value = data.delay_probability
-  // } catch (err) { console.error('Hour prediction error:', err) }
 }
 
 watch(activeTabRoute, (val) => {
@@ -248,6 +292,7 @@ watch(activeTabRoute, (val) => {
   const daytype   = getDaytypeFromDate(savedForm.value.date)
   const routeName = val ?? selectedRoute.value ?? 'East River'
   runPredictions(routeName, activeDirection.value, season, daytype, savedForm.value.temp ?? 60, savedForm.value.precip ?? 0)
+  triggerRoutePopup()
 })
 
 function goToSystem() {
@@ -256,8 +301,11 @@ function goToSystem() {
   activeTabRoute.value = null
   riskLevel.value = null
   delayProbability.value = null
+  dailyRiskLevel.value = null
+  dailyDelayProbability.value = null
   hourlyCurve.value = []
-  // lastPayload = null  // restore when switching back to API mode
+  showRoutePopup.value = false
+  activeHours.value = DEFAULT_HOURS
   mapRef.value?.resetView()
 }
 </script>
@@ -283,5 +331,13 @@ function goToSystem() {
 .overlay-leave-to {
   opacity: 0;
 }
+.popup-enter-active,
+.popup-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.popup-enter-from,
+.popup-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(10px);
+}
 </style>
-

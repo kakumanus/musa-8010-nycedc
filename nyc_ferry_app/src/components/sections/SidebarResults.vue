@@ -78,7 +78,7 @@
             <p class="text-sm text-ferry-light-gray">Building hourly forecast…</p>
           </div>
 
-          <template v-else-if="hourlyCurve.length">
+          <template v-else-if="filteredCurve.length">
             <svg viewBox="0 0 260 80" class="w-full px-2" xmlns="http://www.w3.org/2000/svg">
               <line x1="0" y1="20" x2="260" y2="20" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
               <line x1="0" y1="40" x2="260" y2="40" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
@@ -90,8 +90,8 @@
               <path :d="linePath" fill="none" stroke="#63b3ed" stroke-width="1.5" stroke-linejoin="round" />
               <line
                 v-if="selectedHour !== null"
-                :x1="((selectedHour - hourlyCurve[0].hour) / (hourlyCurve[hourlyCurve.length - 1].hour - hourlyCurve[0].hour)) * CHART_W"
-                :x2="((selectedHour - hourlyCurve[0].hour) / (hourlyCurve[hourlyCurve.length - 1].hour - hourlyCurve[0].hour)) * CHART_W"
+                :x1="hourToX(selectedHour)"
+                :x2="hourToX(selectedHour)"
                 y1="0"
                 y2="80"
                 :stroke="selectedLineColor"
@@ -104,40 +104,40 @@
             <div class="flex flex-col gap-1">
               <input
                 type="range"
-                :min="hourlyCurve[0].hour"
-                :max="hourlyCurve[hourlyCurve.length - 1].hour"
-                :value="selectedHour ?? hourlyCurve[0].hour"
+                :min="curveMinHour"
+                :max="curveMaxHour"
+                :value="selectedHour ?? curveMinHour"
                 step="1"
                 class="w-full slider-custom"
                 @input="onSliderInput"
               />
               <div class="flex justify-between text-xs text-ferry-light-gray">
-                <span>6 AM</span>
+                <span>{{ formatHour(curveMinHour) }}</span>
                 <span v-if="selectedHour !== null" class="text-white font-medium">{{ formatHour(selectedHour) }}</span>
-                <span>10 PM</span>
+                <span>{{ formatHour(curveMaxHour) }}</span>
               </div>
             </div>
 
             <!-- hourly stats card — only shown for a specific route, not All -->
-            <div v-if="activeRoute && selectedHour !== null && hourlyStats" class="mt-1 rounded-lg bg-white/5 border border-white/10 p-3 flex flex-col gap-2">
+            <div v-if="activeRoute && selectedHour !== null" class="mt-1 rounded-lg bg-white/5 border border-white/10 p-3 flex flex-col gap-2">
               <p class="text-xs font-heading uppercase tracking-wider text-ferry-light-gray">{{ formatHour(selectedHour) }} Conditions</p>
               <div class="grid grid-cols-3 gap-2">
                 <div class="flex flex-col gap-0.5">
                   <p class="text-xs text-ferry-light-gray">Current GTFS Trips</p>
                   <p class="text-sm font-heading text-white">
-                    {{ hourlyStats.avg_trips !== null ? hourlyStats.avg_trips : '—' }}
+                    {{ hourlyStats?.avg_trips !== null ? hourlyStats?.avg_trips : '—' }}
                   </p>
                 </div>
                 <div class="flex flex-col gap-0.5">
                   <p class="text-xs text-ferry-light-gray">Max Load Factor*</p>
                   <p class="text-sm font-heading" :class="loadFactorClass">
-                    {{ hourlyStats.max_load_factor !== null ? `${(hourlyStats.max_load_factor * 100).toFixed(0)}%` : '—' }}
+                    {{ hourlyStats?.max_load_factor !== null ? `${(hourlyStats!.max_load_factor! * 100).toFixed(0)}%` : '—' }}
                   </p>
                 </div>
                 <div class="flex flex-col gap-0.5">
                   <p class="text-xs text-ferry-light-gray">Vessel Capacity*</p>
                   <p class="text-sm font-heading text-white">
-                    {{ hourlyStats.vessel_capacity !== null ? hourlyStats.vessel_capacity : '—' }}
+                    {{ hourlyStats?.vessel_capacity !== null ? hourlyStats?.vessel_capacity : '—' }}
                   </p>
                 </div>
               </div>
@@ -257,7 +257,8 @@ import { ref, computed, watch, onMounted } from 'vue'
 const TRIPS_URL = 'https://raw.githubusercontent.com/kakumanus/musa-8010-nycedc/refs/heads/main/nyc_ferry_app/public/gtfs/trips.txt'
 const STOP_TIMES_URL = 'https://raw.githubusercontent.com/kakumanus/musa-8010-nycedc/refs/heads/main/nyc_ferry_app/public/gtfs/stop_times.txt'
 
-const gtfsTripsPerHour = ref<Record<string, Record<string, Record<number, number>>>>({})
+// route_id → daytype → hour → direction_id → trip count
+const gtfsTripsPerHour = ref<Record<string, Record<string, Record<number, Record<number, number>>>>>({})
 
 async function loadGtfsStats() {
   const [tripsText, stopTimesText, calendarText] = await Promise.all([
@@ -274,20 +275,20 @@ async function loadGtfsStats() {
     serviceType[service_id] = monday === '1' ? 'WEEKDAY' : 'WEEKEND'
   }
 
-  const tripInfo: Record<string, { route_id: string; daytype: string }> = {}
-  const primaryServices = new Set(['1', '5'])
+  const tripInfo: Record<string, { route_id: string; daytype: string; direction_id: number }> = {}
 
   for (const line of tripsText.trim().split('\n').slice(1)) {
     const cols = line.split(',')
     const route_id = cols[0].replace(/"/g, '').trim()
     const service_id = cols[1].replace(/"/g, '').trim()
     const trip_id = cols[2].replace(/"/g, '').trim()
-    if (!primaryServices.has(service_id)) continue
+    const direction_id = parseInt(cols[5]?.trim() ?? '0')
     const daytype = serviceType[service_id] ?? 'WEEKDAY'
-    tripInfo[trip_id] = { route_id, daytype }
+    tripInfo[trip_id] = { route_id, daytype, direction_id }
   }
 
-  const counts: Record<string, Record<string, Record<number, Set<string>>>> = {}
+  const counts: Record<string, Record<string, Record<number, Record<number, Set<string>>>>> = {}
+
   for (const line of stopTimesText.trim().split('\n').slice(1)) {
     const cols = line.split(',')
     const trip_id = cols[0].trim()
@@ -295,27 +296,33 @@ async function loadGtfsStats() {
     const stop_sequence = parseInt(cols[4].trim())
     if (stop_sequence !== 1) continue
     const hour = parseInt(departure.split(':')[0])
-    if (hour < 6 || hour > 22) continue
+    if (hour < 5 || hour > 22) continue
     const info = tripInfo[trip_id]
     if (!info) continue
-    const { route_id, daytype } = info
+    const { route_id, daytype, direction_id } = info
     if (!counts[route_id]) counts[route_id] = {}
     if (!counts[route_id][daytype]) counts[route_id][daytype] = {}
-    if (!counts[route_id][daytype][hour]) counts[route_id][daytype][hour] = new Set()
-    counts[route_id][daytype][hour].add(trip_id)
+    if (!counts[route_id][daytype][hour]) counts[route_id][daytype][hour] = {}
+    if (!counts[route_id][daytype][hour][direction_id]) counts[route_id][daytype][hour][direction_id] = new Set()
+    counts[route_id][daytype][hour][direction_id].add(trip_id)
   }
 
-  const result: Record<string, Record<string, Record<number, number>>> = {}
+  const result: Record<string, Record<string, Record<number, Record<number, number>>>> = {}
   for (const route in counts) {
     result[route] = {}
     for (const daytype in counts[route]) {
       result[route][daytype] = {}
       for (const hour in counts[route][daytype]) {
-        result[route][daytype][parseInt(hour)] = counts[route][daytype][parseInt(hour)].size
+        result[route][daytype][parseInt(hour)] = {}
+        for (const dir in counts[route][daytype][parseInt(hour)]) {
+          result[route][daytype][parseInt(hour)][parseInt(dir)] =
+            counts[route][daytype][parseInt(hour)][parseInt(dir)].size
+        }
       }
     }
   }
   gtfsTripsPerHour.value = result
+  emitActiveHours()
 }
 
 onMounted(() => {
@@ -381,7 +388,6 @@ const HOURLY_STATS = computed(() => {
     }
   }
 
-  // Combine RR and SV into RS (Rockaway-Soundview)
   const RR = result['RR'] ?? {}
   const SV = result['SV'] ?? {}
   const allHours = new Set([...Object.keys(RR), ...Object.keys(SV)].map(Number))
@@ -422,46 +428,15 @@ const emit = defineEmits<{
   back: []
   'update:activeRoute': [route: string | null]
   'update:selectedHour': [hour: number]
+  'update:activeHours': [hours: number[]]
+  'update:dailyRisk': [risk: { level: 'low' | 'medium' | 'high'; probability: number }]
 }>()
 
 const activeRoute = ref<string | null>(props.routes?.[0] ?? null)
-const selectedHour = ref<number | null>(6)
+const selectedHour = ref<number | null>(null)
 
 const CHART_W = 260
 const CHART_H = 80
-
-function hourToX(hour: number): number {
-  return ((hour - 6) / (22 - 6)) * CHART_W
-}
-
-function probToY(prob: number): number {
-  return CHART_H - prob * CHART_H
-}
-
-const linePath = computed(() => {
-  if (!props.hourlyCurve?.length) return ''
-  return props.hourlyCurve
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${hourToX(p.hour).toFixed(1)},${probToY(p.probability).toFixed(1)}`)
-    .join(' ')
-})
-
-const areaPath = computed(() => {
-  if (!props.hourlyCurve?.length) return ''
-  const line = props.hourlyCurve
-    .map((p, i) => `${i === 0 ? 'M' : 'L'}${hourToX(p.hour).toFixed(1)},${probToY(p.probability).toFixed(1)}`)
-    .join(' ')
-  const first = props.hourlyCurve[0]
-  const last = props.hourlyCurve[props.hourlyCurve.length - 1]
-  return `${line} L${hourToX(last.hour).toFixed(1)},${CHART_H} L${hourToX(first.hour).toFixed(1)},${CHART_H} Z`
-})
-
-const selectedLineColor = computed(() => {
-  const point = props.hourlyCurve?.find(p => p.hour === selectedHour.value)
-  if (!point) return '#63b3ed'
-  if (point.risk === 'high') return '#f87171'
-  if (point.risk === 'medium') return '#facc15'
-  return '#4ade80'
-})
 
 // helper: which route IDs to aggregate over
 const activeRouteIds = computed(() => {
@@ -477,25 +452,109 @@ function getDaytype(): 'WEEKDAY' | 'WEEKEND' {
   return (dow === 0 || dow === 6) ? 'WEEKEND' : 'WEEKDAY'
 }
 
+// helper: direction_id key — NB = 1, SB = 0
+const dirKey = computed(() => props.direction === 'NB' ? 1 : 0)
+
+// Hours where this route actually has trips for this direction + daytype
+const activeHours = computed(() => {
+  const ids = activeRouteIds.value
+  const daytype = getDaytype()
+  const hourSet = new Set<number>()
+  for (const id of ids) {
+    const byHour = gtfsTripsPerHour.value[id]?.[daytype]
+    if (!byHour) continue
+    for (const [h, byDir] of Object.entries(byHour)) {
+      if ((byDir[dirKey.value] ?? 0) > 0) hourSet.add(parseInt(h))
+    }
+  }
+  if (!hourSet.size) return [5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22]
+  return Array.from(hourSet).sort((a, b) => a - b)
+})
+
+function emitActiveHours() {
+  emit('update:activeHours', activeHours.value)
+}
+
+// Filter the incoming hourly curve to only hours this route actually operates
+const filteredCurve = computed(() => {
+  if (!props.hourlyCurve?.length) return []
+  const hourSet = new Set(activeHours.value)
+  return props.hourlyCurve.filter(p => hourSet.has(p.hour))
+})
+
+const curveMinHour = computed(() => filteredCurve.value[0]?.hour ?? 5)
+const curveMaxHour = computed(() => filteredCurve.value[filteredCurve.value.length - 1]?.hour ?? 22)
+
+function hourToX(hour: number): number {
+  if (curveMaxHour.value === curveMinHour.value) return 0
+  return ((hour - curveMinHour.value) / (curveMaxHour.value - curveMinHour.value)) * CHART_W
+}
+
+function probToY(prob: number): number {
+  return CHART_H - prob * CHART_H
+}
+
+const linePath = computed(() => {
+  if (!filteredCurve.value.length) return ''
+  return filteredCurve.value
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${hourToX(p.hour).toFixed(1)},${probToY(p.probability).toFixed(1)}`)
+    .join(' ')
+})
+
+const areaPath = computed(() => {
+  if (!filteredCurve.value.length) return ''
+  const line = filteredCurve.value
+    .map((p, i) => `${i === 0 ? 'M' : 'L'}${hourToX(p.hour).toFixed(1)},${probToY(p.probability).toFixed(1)}`)
+    .join(' ')
+  const first = filteredCurve.value[0]
+  const last = filteredCurve.value[filteredCurve.value.length - 1]
+  return `${line} L${hourToX(last.hour).toFixed(1)},${CHART_H} L${hourToX(first.hour).toFixed(1)},${CHART_H} Z`
+})
+
+const selectedLineColor = computed(() => {
+  const point = filteredCurve.value.find(p => p.hour === selectedHour.value)
+  if (!point) return '#63b3ed'
+  if (point.risk === 'high') return '#f87171'
+  if (point.risk === 'medium') return '#facc15'
+  return '#4ade80'
+})
+
 const hourlyStats = computed(() => {
   if (selectedHour.value === null) return null
   const ids = activeRouteIds.value
+
   const entries = ids
     .map(id => HOURLY_STATS.value[id]?.[selectedHour.value!])
     .filter(Boolean) as { max_load_factor: number; vessel_capacity: number }[]
-  if (!entries.length) return null
 
   const daytype = getDaytype()
-  const trips = ids.reduce((sum, id) => sum + (gtfsTripsPerHour.value[id]?.[daytype]?.[selectedHour.value!] ?? 0), 0)
-  const max_load_factor = Math.max(...entries.map(e => e.max_load_factor))
-  const vessel_capacity = Math.round(entries.reduce((s, e) => s + e.vessel_capacity, 0) / entries.length)
+  const trips = ids.reduce((sum, id) =>
+    sum + (gtfsTripsPerHour.value[id]?.[daytype]?.[selectedHour.value!]?.[dirKey.value] ?? 0), 0)
 
-  return { max_load_factor, vessel_capacity, avg_trips: trips || null }
+  return {
+    max_load_factor: entries.length ? Math.max(...entries.map(e => e.max_load_factor)) : null,
+    vessel_capacity: entries.length ? Math.round(entries.reduce((s, e) => s + e.vessel_capacity, 0) / entries.length) : null,
+    avg_trips: trips || null,
+  }
 })
 
 const highRiskHours = computed(() => {
-  if (!props.hourlyCurve?.length) return 0
-  return props.hourlyCurve.filter(p => p.probability >= 0.6).length
+  if (!filteredCurve.value.length) return 0
+  return filteredCurve.value.filter(p => p.probability >= 0.6).length
+})
+
+// Average probability across all active hours — used for popup and Route Summary card
+const dailyDelayRiskPct = computed(() => {
+  if (!filteredCurve.value.length) return null
+  const avg = filteredCurve.value.reduce((sum, p) => sum + p.probability, 0) / filteredCurve.value.length
+  return Math.round(avg * 100)
+})
+
+// Emit daily risk up to parent whenever it changes so the popup stays in sync
+watch(dailyDelayRiskPct, (val) => {
+  if (val === null) return
+  const level = val >= 60 ? 'high' : val >= 30 ? 'medium' : 'low'
+  emit('update:dailyRisk', { level, probability: val / 100 })
 })
 
 const routeSummary = computed(() => {
@@ -530,7 +589,9 @@ const routeSummary = computed(() => {
   const daytype = getDaytype()
   const totalTrips = ids.reduce((sum, id) => {
     const byHour = gtfsTripsPerHour.value[id]?.[daytype]
-    return sum + (byHour ? Object.values(byHour).reduce((s, v) => s + v, 0) : 0)
+    return sum + (byHour
+      ? Object.values(byHour).reduce((s, byDir) => s + (byDir[dirKey.value] ?? 0), 0)
+      : 0)
   }, 0)
   const totalHours = ids.reduce((sum, id) => {
     const byHour = gtfsTripsPerHour.value[id]?.[daytype]
@@ -539,12 +600,6 @@ const routeSummary = computed(() => {
   const avgTrips = totalHours > 0 ? Math.round(totalTrips / totalHours) : null
 
   return { peakHour, hoursOverCapacity, avgLoad, avgLoadClass, avgTrips }
-})
-
-const dailyDelayRiskPct = computed(() => {
-  if (!props.hourlyCurve?.length) return null
-  const avg = props.hourlyCurve.reduce((sum, p) => sum + p.probability, 0) / props.hourlyCurve.length
-  return Math.round(avg * 100)
 })
 
 const loadChartPadBottom = 12
@@ -601,7 +656,7 @@ const overCapacityHours = computed(() => {
 })
 
 const loadFactorClass = computed(() => {
-  if (!hourlyStats.value) return 'text-white'
+  if (!hourlyStats.value || hourlyStats.value.max_load_factor === null) return 'text-white'
   const lf = hourlyStats.value.max_load_factor
   if (lf >= 1.1) return 'text-red-400'
   if (lf >= 0.9) return 'text-yellow-400'
@@ -661,10 +716,24 @@ const riskDescription = computed(() => {
   return 'Normal operations expected.'
 })
 
-watch(activeRoute, (val) => emit('update:activeRoute', val), { immediate: true })
+watch(activeRoute, (val) => {
+  emit('update:activeRoute', val)
+  emitActiveHours()
+}, { immediate: true })
+
 watch(() => props.routes, (val) => { activeRoute.value = val?.[0] ?? null })
+
+watch(() => props.direction, () => { emitActiveHours() })
+
+watch(() => props.date, () => { emitActiveHours() })
+
+watch(activeHours, () => { emitActiveHours() })
+
 watch(() => props.hourlyCurve, (val) => {
-  if (val?.length) selectedHour.value = val[0].hour
+  if (val?.length) {
+    const firstActive = filteredCurve.value[0]?.hour ?? val[0].hour
+    selectedHour.value = firstActive
+  }
 })
 </script>
 

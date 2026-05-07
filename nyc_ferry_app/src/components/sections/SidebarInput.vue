@@ -85,14 +85,14 @@
           </button>
         </div>
         <input
-          :value="form.date"
+          v-model="form.date"
           type="text"
           placeholder="MM/DD/YYYY"
           maxlength="10"
           class="bg-white/10 border border-white/20 rounded px-3 py-2 text-sm text-white placeholder-ferry-cool-gray focus:outline-none focus:border-ferry-light-blue"
           :class="{ 'border-red-400': errors.date }"
-          @input="formatDate"
-          @keydown.enter.prevent="($event.target as HTMLInputElement).blur()"
+          @blur="onDateBlur"
+          @keydown.enter.prevent="handleSubmit"
         />
         <p v-if="errors.date" class="text-xs text-red-400 mt-0.5">{{ errors.date }}</p>
       </div>
@@ -109,6 +109,7 @@
             placeholder="0"
             class="bg-white/10 border border-white/20 rounded px-3 py-2 text-sm text-white placeholder-ferry-cool-gray focus:outline-none focus:border-ferry-light-blue"
             :class="{ 'border-red-400': errors.temp }"
+            @keydown.enter.prevent="handleSubmit"
           />
           <p v-if="errors.temp" class="text-xs text-red-400 mt-0.5">{{ errors.temp }}</p>
         </div>
@@ -124,6 +125,7 @@
             placeholder="0"
             class="bg-white/10 border border-white/20 rounded px-3 py-2 text-sm text-white placeholder-ferry-cool-gray focus:outline-none focus:border-ferry-light-blue"
             :class="{ 'border-red-400': errors.precip }"
+            @keydown.enter.prevent="handleSubmit"
           />
           <p v-if="errors.precip" class="text-xs text-red-400 mt-0.5">{{ errors.precip }}</p>
         </div>
@@ -217,29 +219,17 @@ watch(form, (val) => {
   emit('update:savedForm', { ...val })
 }, { deep: true })
 
-let prevLength = 0
-
-function formatDate(e: Event) {
-  const input = e.target as HTMLInputElement
-  const raw = input.value.replace(/\D/g, '')
-
-  // Only auto-format when typing forward, not when editing/deleting
-  if (input.value.length < prevLength) {
-    prevLength = input.value.length
-    form.value.date = input.value
-    return
+// Format date only on blur so the user can freely edit any part of the field
+function onDateBlur() {
+  const raw = form.value.date.replace(/\D/g, '')
+  if (!raw.length) return
+  if (raw.length >= 8) {
+    form.value.date = raw.slice(0, 2) + '/' + raw.slice(2, 4) + '/' + raw.slice(4, 8)
+  } else if (raw.length >= 4) {
+    form.value.date = raw.slice(0, 2) + '/' + raw.slice(2, 4) + '/' + raw.slice(4)
+  } else if (raw.length >= 2) {
+    form.value.date = raw.slice(0, 2) + '/' + raw.slice(2)
   }
-
-  let val = raw
-  if (raw.length >= 3 && raw.length <= 4) {
-    val = raw.slice(0, 2) + '/' + raw.slice(2)
-  } else if (raw.length >= 5) {
-    val = raw.slice(0, 2) + '/' + raw.slice(2, 4) + '/' + raw.slice(4, 8)
-  }
-
-  prevLength = val.length
-  form.value.date = val
-  input.value = val
 }
 
 function getMinDate(): Date {
@@ -254,9 +244,7 @@ function fillMinDate() {
   const month = String(d.getMonth() + 1).padStart(2, '0')
   const day = String(d.getDate()).padStart(2, '0')
   const year = d.getFullYear()
-  const formatted = `${month}/${day}/${year}`
-  form.value.date = formatted
-  prevLength = formatted.length
+  form.value.date = `${month}/${day}/${year}`
 }
 
 function handleSubmit() {
