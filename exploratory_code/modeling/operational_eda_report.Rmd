@@ -1,0 +1,661 @@
+---
+title: "Operational EDA"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(scales)
+  library(knitr)
+  library(ggplot2)
+  library(stringr)
+  library(readr)
+})
+
+report_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/final/final_delivery_package/01_submission_materials/operational_eda_report"
+dir.create(report_dir, recursive = TRUE, showWarnings = FALSE)
+
+trip_files <- c(
+  "C:/Data/Spring 2026/CPLN 7900/trip_data/NYCF_trip_data_2024.csv",
+  "C:/Data/Spring 2026/CPLN 7900/trip_data/NYCF_trip_data_2025.01_06.csv"
+)
+decomp_file <- "C:/Data/Spring 2026/CPLN 7900/explore/outputs/arrival_decomposition_rebuild_v3_raw_20260326_second_stop_corrected/stop_level_arrival_decomposition_table_corrected_second_stop.csv"
+
+accent <- "#1A9988"
+light_accent <- "#B8E6DD"
+gold <- "#F2C14E"
+coral <- "#D95F59"
+blue <- "#7BA7C7"
+muted_palette <- c(
+  "Inherited previous-trip delay" = "#1A9988",
+  "Carried within-trip delay" = "#F2C14E",
+  "Upstream landside delay" = "#7BA7C7",
+  "Upstream waterside delay" = "#D95F59"
+)
+plot_theme <- theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", size = 17),
+    panel.grid.minor = element_blank(),
+    legend.title = element_blank(),
+    axis.text = element_text(color = "#333333")
+  )
+
+fmt_pct <- function(x) percent(x, accuracy = 0.1)
+clean_kable <- function(x, caption = NULL, align = NULL) {
+  if (is.null(align)) {
+    align <- paste0(if_else(map_lgl(x, is.character), "l", "r"), collapse = "")
+  }
+  kable(x, caption = caption, align = align)
+}
+```
+
+This operational EDA complements the associative model by examining how ferry delay is recorded, decomposed, generated, and recovered. The four sections ask what issues are recorded in trip notes, how stop-level delay can be decomposed, where large delays are observed versus generated upstream, and whether inherited delay can be absorbed before the next trip begins.
+
+# Text Analysis
+
+Trip notes were extracted from raw NYC Ferry trip-level files and parsed into standardized categories. One trip can have multiple categories, so category shares are presence rates rather than mutually exclusive percentages. Results are descriptive associations, not causal effects.
+
+```{r text-analysis}
+parse_note_segments <- function(trip_uid, note_text) {
+  note_text <- ifelse(is.na(note_text), "", note_text)
+  if (str_trim(note_text) == "") return(tibble(trip_uid = integer(), category = character(), description = character()))
+  matches <- str_match_all(note_text, "\\[(\\d+)\\]\\s*([^:\\[]+):\\s*([^\\[]*)")[[1]]
+  if (nrow(matches) == 0) return(tibble(trip_uid = trip_uid, category = "Unparsed", description = note_text))
+  tibble(trip_uid = trip_uid, category = matches[, 3], description = matches[, 4])
+}
+
+clean_category <- function(x) {
+  out <- str_squish(x) %>% str_replace_all("\\s+", " ") %>% str_to_title()
+  recode(out, "Uscg Restriction" = "USCG Restriction", "Nyc Ferry" = "NYC Ferry", "Ny Waterway" = "NY Waterway", .default = out)
+}
+
+raw_trips <- map_dfr(trip_files, ~ read_csv(.x, show_col_types = FALSE) %>% mutate(source_file = basename(.x))) %>%
+  select(-matches("^\\.\\.\\."))
+
+trips <- raw_trips %>%
+  mutate(
+    trip_uid = row_number(),
+    trip_id = if ("Unique_id" %in% names(.)) Unique_id else row_number(),
+    route = if ("route_no" %in% names(.)) route_no else NA_character_,
+    service_date = if ("trip_date" %in% names(.)) mdy(trip_date) else as.Date(NA),
+    note_text = coalesce(notes, ""),
+    scheduled_arrival_ts = mdy_hm(scheduled_arrival_dt, quiet = TRUE),
+    actual_arrival_ts = mdy_hm(actual_arrival_dt, quiet = TRUE),
+    arrival_delay_min_raw = as.numeric(difftime(actual_arrival_ts, scheduled_arrival_ts, units = "mins")),
+    status_text = str_squish(str_c(coalesce(trip_status, ""), coalesce(trip_status_actual, ""), sep = " | ")),
+    cancelled = str_detect(str_to_lower(status_text), "trip not completed|cancel") | coalesce(`(16) Trip Cancelled`, FALSE),
+    partial_completion = str_detect(str_to_lower(status_text), "partial") | coalesce(`(17) Partially Completed`, FALSE),
+    cancel_or_partial_completion = cancelled | partial_completion,
+    completed_trip = !cancel_or_partial_completion & (str_detect(str_to_lower(status_text), "completed") | coalesce(`(10)  Completed`, FALSE)),
+    valid_delay = completed_trip & !is.na(arrival_delay_min_raw),
+    delayed_5 = valid_delay & arrival_delay_min_raw > 5,
+    excessive_delay_10 = valid_delay & arrival_delay_min_raw > 10
+  )
+
+note_segments <- map2_dfr(trips$trip_uid, trips$note_text, parse_note_segments) %>%
+  mutate(category = clean_category(category), description = str_squish(description)) %>%
+  filter(!is.na(category), category != "")
+
+trip_category <- note_segments %>%
+  distinct(trip_uid, category) %>%
+  left_join(trips %>% select(trip_uid, route, service_date, note_text, arrival_delay_min_raw, delayed_5, excessive_delay_10, cancel_or_partial_completion), by = "trip_uid") %>%
+  filter(category != "Completed")
+
+category_presence <- trip_category %>%
+  group_by(category) %>%
+  summarise(
+    n_trips_with_category = n_distinct(trip_uid),
+    share_all_trips = n_trips_with_category / nrow(trips),
+    share_among_delayed_5 = n_distinct(trip_uid[delayed_5]) / sum(trips$delayed_5, na.rm = TRUE),
+    share_among_excessive_delay_10 = n_distinct(trip_uid[excessive_delay_10]) / sum(trips$excessive_delay_10, na.rm = TRUE),
+    share_among_cancel_or_partial_completion = n_distinct(trip_uid[cancel_or_partial_completion]) / sum(trips$cancel_or_partial_completion, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pmax(share_among_excessive_delay_10, share_among_cancel_or_partial_completion, na.rm = TRUE)))
+write_csv(category_presence, file.path(report_dir, "text_category_presence_by_outcome.csv"))
+
+category_rates <- trip_category %>%
+  group_by(category) %>%
+  summarise(
+    n_trips_with_category = n_distinct(trip_uid),
+    delayed_5_rate = mean(delayed_5, na.rm = TRUE),
+    excessive_delay_10_rate = mean(excessive_delay_10, na.rm = TRUE),
+    cancel_or_partial_completion_rate = mean(cancel_or_partial_completion, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(pmax(excessive_delay_10_rate, cancel_or_partial_completion_rate, na.rm = TRUE)))
+write_csv(category_rates, file.path(report_dir, "text_category_outcome_rates.csv"))
+
+support_threshold <- if_else(sum(category_rates$n_trips_with_category >= 50) >= 8, 50, 20)
+typical_notes <- trip_category %>%
+  filter(str_squish(note_text) != "") %>%
+  group_by(category) %>%
+  arrange(desc(arrival_delay_min_raw), .by_group = TRUE) %>%
+  slice_head(n = 3) %>%
+  ungroup() %>%
+  transmute(Category = category, `Example note` = str_trunc(note_text, 220), Route = route, Date = service_date, Delay = round(arrival_delay_min_raw, 1), `Delay >5` = delayed_5, `Delay >10` = excessive_delay_10, `Cancel / partial` = cancel_or_partial_completion)
+write_csv(typical_notes, file.path(report_dir, "text_category_typical_notes.csv"))
+
+presence_display <- category_presence %>%
+  slice_head(n = 12) %>%
+  transmute(
+    Category = category,
+    `All trips` = fmt_pct(share_all_trips),
+    `Delay >5` = fmt_pct(share_among_delayed_5),
+    `Delay >10` = fmt_pct(share_among_excessive_delay_10),
+    `Cancel / partial` = fmt_pct(share_among_cancel_or_partial_completion)
+  )
+
+rates_display <- category_rates %>%
+  filter(n_trips_with_category >= support_threshold) %>%
+  slice_head(n = 12) %>%
+  transmute(
+    Category = category,
+    Trips = n_trips_with_category,
+    `Delay >5 rate` = fmt_pct(delayed_5_rate),
+    `Delay >10 rate` = fmt_pct(excessive_delay_10_rate),
+    `Cancel / partial rate` = fmt_pct(cancel_or_partial_completion_rate)
+  )
+```
+
+```{r text-tables}
+clean_kable(presence_display, caption = "Category presence among outcome groups", align = "lrrrr")
+clean_kable(rates_display, caption = paste0("Outcome rates when category appears (support threshold n >= ", support_threshold, ")"), align = "lrrrr")
+```
+
+The first table shows which note categories appear most often among delayed or cancelled/partially completed trips. The second table flips the question around: when a category appears, it shows how often that trip is associated with delay or cancellation. Categories are operational signals entered in notes, so they should be read as associations rather than causes.
+
+Passenger delays and marine traffic are the most visible delay-associated note categories, but they point to different mechanisms. Passenger delays become especially concentrated among delay >10 trips, while marine traffic is more prominent in the broader delay >5 group. Rare categories such as vessel mechanical issues, weather, and USCG restrictions appear less often overall but have high disruption rates when they occur, making them operationally important despite their low frequency.
+
+# Delay Decomposition
+
+This is a median-based expected-time decomposition. A stop-level delay is decomposed into inherited previous-trip delay, carried within-trip delay, upstream landside delay, upstream waterside delay, and upstream wait when available. Vessel chains are reconstructed by vessel and operational sequence; consecutive trips by the same vessel are linked when they are operationally continuous. Because observed arrival/departure timing can be incomplete or noisy, historical median expected arrival/departure times are used as the operational baseline. Expected medians reflect comparable schedule contexts such as route, direction, stop, day type, season, and scheduled hour when available. This is accounting/decomposition, not causal inference.
+
+```{r decomposition}
+decomp <- read_csv(decomp_file, show_col_types = FALSE)
+component_cols <- c("inherited_prev_trip_delay", "carried_within_trip_delay", "upstream_landside_delay", "upstream_waterside_delay", "upstream_wait")
+display_components <- c("inherited_prev_trip_delay", "carried_within_trip_delay", "upstream_landside_delay", "upstream_waterside_delay")
+component_labels <- c(
+  inherited_prev_trip_delay = "Inherited previous-trip delay",
+  carried_within_trip_delay = "Carried within-trip delay",
+  upstream_landside_delay = "Upstream landside delay",
+  upstream_waterside_delay = "Upstream waterside delay",
+  upstream_wait = "Upstream wait"
+)
+
+eligible <- decomp %>%
+  mutate(eligible_flag = eligible_arrival_decomp %in% c(TRUE, 1, "TRUE", "true", "1")) %>%
+  filter(eligible_flag)
+
+decomp_long <- eligible %>%
+  mutate(`Delay >5` = arrival_delay_min > 5, `Delay >10` = arrival_delay_min > 10) %>%
+  select(trip_key, stop_id, stop_sequence, `Delay >5`, `Delay >10`, all_of(component_cols)) %>%
+  pivot_longer(all_of(component_cols), names_to = "component", values_to = "component_minutes") %>%
+  mutate(Component = recode(component, !!!component_labels), displayed = component %in% display_components)
+
+decomp_groups <- bind_rows(
+  decomp_long %>% filter(`Delay >5`) %>% mutate(delay_group = "Delay >5"),
+  decomp_long %>% filter(`Delay >10`) %>% mutate(delay_group = "Delay >10")
+)
+
+component_summary <- decomp_groups %>%
+  group_by(delay_group, component, Component, displayed) %>%
+  summarise(avg_min = mean(component_minutes, na.rm = TRUE), positive_avg_min = pmax(avg_min, 0), .groups = "drop") %>%
+  group_by(delay_group) %>%
+  mutate(share = if_else(displayed, positive_avg_min / sum(positive_avg_min[displayed], na.rm = TRUE), NA_real_)) %>%
+  ungroup()
+
+component_wide <- component_summary %>%
+  select(delay_group, Component, avg_min, share) %>%
+  pivot_wider(names_from = delay_group, values_from = c(avg_min, share), names_glue = "{delay_group}_{.value}") %>%
+  mutate(Component = factor(Component, levels = c("Inherited previous-trip delay", "Carried within-trip delay", "Upstream landside delay", "Upstream waterside delay", "Upstream wait"))) %>%
+  arrange(Component) %>%
+  mutate(Component = as.character(Component))
+write_csv(component_wide, file.path(report_dir, "delay_component_average_wide_table.csv"))
+
+component_table_display <- component_wide %>%
+  transmute(
+    Component,
+    `Delay >5 avg min` = round(`Delay >5_avg_min`, 2),
+    `Delay >5 share` = if_else(is.na(`Delay >5_share`), "—", fmt_pct(`Delay >5_share`)),
+    `Delay >10 avg min` = round(`Delay >10_avg_min`, 2),
+    `Delay >10 share` = if_else(is.na(`Delay >10_share`), "—", fmt_pct(`Delay >10_share`))
+  )
+
+plot_components <- component_summary %>%
+  filter(displayed) %>%
+  mutate(Component = factor(Component, levels = rev(c("Inherited previous-trip delay", "Carried within-trip delay", "Upstream landside delay", "Upstream waterside delay"))))
+
+decomp_bar <- ggplot(plot_components, aes(x = delay_group, y = positive_avg_min, fill = Component)) +
+  geom_col(width = 0.65) +
+  scale_fill_manual(values = muted_palette) +
+  labs(title = "Average Delay Components", x = NULL, y = "Average component minutes") +
+  plot_theme
+
+ggsave(file.path(report_dir, "delay_component_average_bar.png"), decomp_bar, width = 8.5, height = 5.5, dpi = 300)
+```
+
+```{r decomposition-output, fig.cap="Average component minutes among stop observations with median-based delay greater than 5 or 10 minutes."}
+print(decomp_bar)
+clean_kable(component_table_display, caption = "Average delay components and displayed-component shares", align = "lrrrr")
+```
+
+The decomposition shows that most delayed stop observations are not mainly created at the current stop or segment. Inherited previous-trip delay is the largest component in both groups, accounting for 64.7% of displayed component minutes among delay >5 observations and 68.4% among delay >10 observations. Carried within-trip delay is the second-largest component, contributing about one-fifth of the displayed delay in both groups. By contrast, newly generated upstream landside and waterside components are much smaller on average.
+
+The severity difference is also important. Delay >10 observations have much larger inherited delay than delay >5 observations, while the shares of landside and waterside delay remain comparatively small. This suggests that severe delay is often the result of propagation through the vessel chain rather than only a local event at the delayed stop. Operationally, this points to the importance of managing vessel turnaround, recovery slack, and delay carryover across trips, not only reducing dwell or travel time on the immediate segment.
+
+# Delay Genesis
+
+This section traces delayed stop observations backward through the same vessel chain using the corrected decomposition table. Targets use median-based delay: `arrival_delay_min > 5` and `arrival_delay_min > 10`. Vessel chains are reconstructed by `vessel_id`, scheduled stop order, and same-vessel continuity; a new chain starts when the scheduled gap is missing or greater than 30 minutes. A major source is a single landside event greater than 5 minutes or a single waterside event greater than 5 minutes. Landside and waterside increments are not combined to define a major source.
+
+```{r genesis}
+stop_label <- if ("stop_name" %in% names(decomp)) "stop_name" else "stop_id"
+prev_stop_label <- if ("prev_stop_name" %in% names(decomp)) "prev_stop_name" else "prev_stop_id"
+vessel_col <- if ("vessel_id" %in% names(decomp)) "vessel_id" else if ("vessel" %in% names(decomp)) "vessel" else NA_character_
+if (is.na(vessel_col)) stop("A vessel identifier is required for delay genesis tracing.")
+
+timeline0 <- decomp %>%
+  mutate(
+    scheduled_ts = suppressWarnings(as.POSIXct(scheduled_time_original, tz = "America/New_York")),
+    eligible_flag = eligible_arrival_decomp %in% c(TRUE, 1, "TRUE", "true", "1")
+  )
+
+trip_bounds <- timeline0 %>%
+  group_by(.data[[vessel_col]], trip_key) %>%
+  summarise(trip_start_ts = min(scheduled_ts, na.rm = TRUE), trip_end_ts = max(scheduled_ts, na.rm = TRUE), .groups = "drop") %>%
+  arrange(.data[[vessel_col]], trip_start_ts, trip_end_ts, trip_key) %>%
+  group_by(.data[[vessel_col]]) %>%
+  mutate(
+    prev_trip_end_ts = lag(trip_end_ts),
+    trip_gap_min = as.numeric(difftime(trip_start_ts, prev_trip_end_ts, units = "mins")),
+    chain_break = is.na(trip_gap_min) | trip_gap_min > 30,
+    vessel_chain_id = paste(.data[[vessel_col]], cumsum(chain_break), sep = "_")
+  ) %>%
+  ungroup() %>%
+  select(.data[[vessel_col]], trip_key, vessel_chain_id, trip_start_ts, trip_gap_min)
+
+timeline <- timeline0 %>%
+  left_join(trip_bounds, by = c(vessel_col, "trip_key")) %>%
+  mutate(
+    positive_landside_delay = pmax(replace_na(upstream_landside_delay, 0), 0),
+    positive_waterside_delay = pmax(replace_na(upstream_waterside_delay, 0), 0),
+    observed_landing = coalesce(as.character(.data[[stop_label]]), as.character(stop_id)),
+    source_from_landing = coalesce(as.character(.data[[prev_stop_label]]), as.character(prev_stop_id), "Origin"),
+    source_to_landing = observed_landing,
+    observed_segment = paste(source_from_landing, "->", observed_landing),
+    source_segment = paste(source_from_landing, "->", source_to_landing),
+    row_top_generated_delay = pmax(positive_landside_delay, positive_waterside_delay),
+    row_top_source_type = case_when(
+      row_top_generated_delay <= 0 ~ NA_character_,
+      positive_landside_delay >= positive_waterside_delay ~ "Landside",
+      TRUE ~ "Waterside"
+    ),
+    major_landside = positive_landside_delay > 5,
+    major_waterside = positive_waterside_delay > 5
+  ) %>%
+  arrange(vessel_chain_id, scheduled_ts, trip_start_ts, trip_key, stop_sequence) %>%
+  group_by(vessel_chain_id) %>%
+  mutate(
+    row_order_within_chain = row_number(),
+    cumulative_positive_generated = cumsum(positive_landside_delay + positive_waterside_delay),
+    cumulative_major_sources = cumsum(major_landside) + cumsum(major_waterside)
+  ) %>%
+  ungroup()
+
+top_source_by_chain <- function(chain_df) {
+  chain_df <- chain_df %>% arrange(row_order_within_chain)
+  best_delay <- numeric(nrow(chain_df)); best_type <- character(nrow(chain_df)); best_landing <- character(nrow(chain_df)); best_segment <- character(nrow(chain_df))
+  current_best <- 0; current_type <- NA_character_; current_landing <- NA_character_; current_segment <- NA_character_
+  for (i in seq_len(nrow(chain_df))) {
+    if (!is.na(chain_df$row_top_generated_delay[i]) && chain_df$row_top_generated_delay[i] > current_best) {
+      current_best <- chain_df$row_top_generated_delay[i]
+      current_type <- chain_df$row_top_source_type[i]
+      current_landing <- chain_df$source_from_landing[i]
+      current_segment <- chain_df$source_segment[i]
+    }
+    best_delay[i] <- current_best; best_type[i] <- current_type; best_landing[i] <- current_landing; best_segment[i] <- current_segment
+  }
+  chain_df %>% mutate(
+    top_source_generated_minutes = best_delay,
+    top_source_type = na_if(best_type, ""),
+    top_source_landing = na_if(best_landing, ""),
+    top_source_segment = na_if(best_segment, "")
+  )
+}
+
+timeline <- timeline %>% group_split(vessel_chain_id) %>% map_dfr(top_source_by_chain)
+
+observed_landing_den <- timeline %>% filter(eligible_flag) %>% count(observed_landing, name = "Observed total observations")
+observed_segment_den <- timeline %>% filter(eligible_flag) %>% count(observed_segment, name = "Observed total observations")
+generated_landing_den <- timeline %>% filter(eligible_flag) %>% count(source_from_landing, name = "Generated total source observations")
+generated_segment_den <- timeline %>% filter(eligible_flag) %>% count(source_segment, name = "Generated total source observations")
+
+target_base <- timeline %>%
+  filter(eligible_flag, arrival_delay_min > 5) %>%
+  transmute(
+    target_id_base = row_number(),
+    observed_landing,
+    observed_segment,
+    arrival_delay_min,
+    cumulative_positive_generated,
+    num_major_sources = cumulative_major_sources,
+    top_source_generated_minutes,
+    top_source_type,
+    top_source_landing,
+    top_source_segment,
+    top_source_share = if_else(cumulative_positive_generated > 0, top_source_generated_minutes / cumulative_positive_generated, NA_real_)
+  )
+
+genesis_targets <- bind_rows(
+  target_base %>% mutate(delay_group = "delay_gt5", delay_group_label = "Delay >5"),
+  target_base %>% filter(arrival_delay_min > 10) %>% mutate(delay_group = "delay_gt10", delay_group_label = "Delay >10")
+) %>%
+  mutate(
+    target_id = paste(delay_group, target_id_base, sep = "_"),
+    genesis_type = case_when(
+      cumulative_positive_generated <= 0 | is.na(cumulative_positive_generated) ~ "No traced positive source",
+      num_major_sources == 1 & top_source_share >= 0.5 ~ "Single major",
+      num_major_sources >= 2 ~ "Multiple major",
+      TRUE ~ "Cumulative"
+    )
+  )
+
+classified_targets <- genesis_targets %>% filter(genesis_type %in% c("Single major", "Multiple major", "Cumulative"))
+
+genesis_type_summary <- classified_targets %>%
+  count(delay_group, delay_group_label, genesis_type, name = "n_targets") %>%
+  group_by(delay_group) %>%
+  mutate(share_of_classified_targets = n_targets / sum(n_targets)) %>%
+  ungroup()
+write_csv(genesis_type_summary, file.path(report_dir, "delay_genesis_type_summary.csv"))
+
+genesis_type_bar <- ggplot(genesis_type_summary, aes(x = delay_group_label, y = share_of_classified_targets, fill = genesis_type)) +
+  geom_col(width = 0.65) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("Single major" = accent, "Multiple major" = gold, "Cumulative" = blue)) +
+  labs(title = "Delay Genesis Type", x = NULL, y = "Share of classified delayed observations") +
+  plot_theme
+
+ggsave(file.path(report_dir, "delay_genesis_type_bar.png"), genesis_type_bar, width = 8.5, height = 5.5, dpi = 300)
+
+top_source_event_summary <- classified_targets %>%
+  count(delay_group, delay_group_label, top_source_type, name = "n_targets") %>%
+  group_by(delay_group) %>%
+  mutate(share_of_targets = n_targets / sum(n_targets)) %>%
+  ungroup()
+write_csv(top_source_event_summary, file.path(report_dir, "delay_top_source_event_summary.csv"))
+
+top_source_event_plot <- ggplot(top_source_event_summary, aes(x = delay_group_label, y = share_of_targets, fill = top_source_type)) +
+  geom_col(width = 0.65) +
+  scale_y_continuous(labels = percent_format()) +
+  scale_fill_manual(values = c("Landside" = accent, "Waterside" = coral)) +
+  labs(title = "Top Source Event Type", x = NULL, y = "Share of classified delayed observations") +
+  plot_theme
+
+ggsave(file.path(report_dir, "delay_top_source_event.png"), top_source_event_plot, width = 8.5, height = 5.5, dpi = 300)
+
+make_location_tables <- function(geography = c("landing", "segment")) {
+  geography <- match.arg(geography)
+  obs_col <- if (geography == "landing") "observed_landing" else "observed_segment"
+  gen_col <- if (geography == "landing") "top_source_landing" else "top_source_segment"
+  obs_den <- if (geography == "landing") observed_landing_den else observed_segment_den
+  gen_den <- if (geography == "landing") generated_landing_den else generated_segment_den
+  obs_den_col <- if (geography == "landing") "observed_landing" else "observed_segment"
+  gen_den_col <- if (geography == "landing") "source_from_landing" else "source_segment"
+
+  observed <- genesis_targets %>%
+    filter(delay_group == "delay_gt5") %>%
+    count(Location = .data[[obs_col]], name = "Observed delayed count") %>%
+    left_join(rename(obs_den, Location = all_of(obs_den_col)), by = "Location") %>%
+    mutate(`Observed delay rate` = `Observed delayed count` / `Observed total observations`)
+
+  generated <- classified_targets %>%
+    filter(delay_group == "delay_gt5", !is.na(.data[[gen_col]])) %>%
+    count(Location = .data[[gen_col]], name = "Generated linked delay count") %>%
+    left_join(rename(gen_den, Location = all_of(gen_den_col)), by = "Location") %>%
+    mutate(`Generated source-linked rate` = `Generated linked delay count` / `Generated total source observations`)
+
+  obs_count <- observed %>% arrange(desc(`Observed delayed count`)) %>% mutate(Rank = row_number()) %>% slice_head(n = 5)
+  gen_count <- generated %>% arrange(desc(`Generated linked delay count`)) %>% mutate(Rank = row_number()) %>% slice_head(n = 5)
+  count_table <- full_join(
+    obs_count %>% select(Rank, `Observed delay location` = Location, `Observed delayed count`),
+    gen_count %>% select(Rank, `Generated source location` = Location, `Generated linked delay count`),
+    by = "Rank"
+  ) %>% arrange(Rank)
+
+  obs_support <- if (sum(observed$`Observed total observations` >= 100, na.rm = TRUE) >= 5) 100 else 50
+  gen_support <- if (sum(generated$`Generated total source observations` >= 100, na.rm = TRUE) >= 5) 100 else 50
+
+  obs_rate <- observed %>% filter(`Observed total observations` >= obs_support) %>% arrange(desc(`Observed delay rate`), desc(`Observed delayed count`)) %>% mutate(Rank = row_number()) %>% slice_head(n = 5)
+  gen_rate <- generated %>% filter(`Generated total source observations` >= gen_support) %>% arrange(desc(`Generated source-linked rate`), desc(`Generated linked delay count`)) %>% mutate(Rank = row_number()) %>% slice_head(n = 5)
+  rate_table <- full_join(
+    obs_rate %>% select(Rank, `Observed delay location` = Location, `Observed delayed count`, `Observed total observations`, `Observed delay rate`),
+    gen_rate %>% select(Rank, `Generated source location` = Location, `Generated linked delay count`, `Generated total source observations`, `Generated source-linked rate`),
+    by = "Rank"
+  ) %>% arrange(Rank)
+
+  list(count = count_table, rate = rate_table, support = tibble(geography, observed_support = obs_support, generated_support = gen_support))
+}
+
+landing_gt5 <- make_location_tables("landing")
+segment_gt5 <- make_location_tables("segment")
+rate_support_summary <- bind_rows(landing_gt5$support, segment_gt5$support)
+write_csv(rate_support_summary, file.path(report_dir, "location_rate_support_thresholds.csv"))
+
+write_csv(landing_gt5$count, file.path(report_dir, "observed_vs_generated_landing_by_count_delay_gt5.csv"))
+write_csv(landing_gt5$rate, file.path(report_dir, "observed_vs_generated_landing_by_rate_delay_gt5.csv"))
+write_csv(segment_gt5$count, file.path(report_dir, "observed_vs_generated_segment_by_count_delay_gt5.csv"))
+write_csv(segment_gt5$rate, file.path(report_dir, "observed_vs_generated_segment_by_rate_delay_gt5.csv"))
+
+format_rate_table <- function(x) {
+  x %>% mutate(
+    `Observed delay rate` = fmt_pct(`Observed delay rate`),
+    `Generated source-linked rate` = fmt_pct(`Generated source-linked rate`)
+  )
+}
+```
+
+```{r genesis-output, fig.cap="Genesis types among classified delayed observations."}
+print(genesis_type_bar)
+```
+
+The genesis classification adds detail to the decomposition results. Most delayed observations are classified as cumulative rather than being explained by one large source event. This is especially true for the broader delay >5 group, where cumulative small increments dominate. For delay >10 observations, the share of single-major and multiple-major cases increases, indicating that severe delays are more likely to involve at least one large upstream landside or waterside increment. However, cumulative cases still remain substantial even among delay >10 observations, which suggests that many severe delays are built through propagation rather than a single identifiable shock.
+
+```{r genesis-event-output, fig.cap="Top source event type for classified delayed observations."}
+print(top_source_event_plot)
+```
+
+The top-source split suggests that landside and waterside processes both matter, but their relative importance changes slightly with severity. For delay >5 observations, top source events are roughly balanced, with waterside sources slightly more prominent. For delay >10 observations, the split shifts more toward landside sources. This pattern suggests that moderate delays may often be linked to in-water movement and segment travel conditions, while the most severe traced delays may be more connected to landing, dwell, boarding, or turnaround-related processes at the upstream source location.
+
+**Observed versus generated locations.** The observed-location tables show where delays appear if we only look at delayed arrivals. The generated-source tables show where the top traced source events occur after applying the decomposition logic. Count-based rankings show where the largest delay burden accumulates, while rate-based rankings show which landings or segments are most delay-prone relative to their own activity volume.
+
+```{r genesis-location-tables}
+clean_kable(landing_gt5$count %>% rename(`Observed delay landing` = `Observed delay location`, `Generated source landing` = `Generated source location`), caption = "Delay >5 landing comparison by count", align = "rlrlr")
+clean_kable(format_rate_table(landing_gt5$rate) %>% rename(`Observed delay landing` = `Observed delay location`, `Generated source landing` = `Generated source location`), caption = "Delay >5 landing comparison by local rate", align = "rlrrlrrr")
+clean_kable(segment_gt5$count %>% rename(`Observed delay segment` = `Observed delay location`, `Generated source segment` = `Generated source location`), caption = "Delay >5 segment comparison by count", align = "rlrlr")
+clean_kable(format_rate_table(segment_gt5$rate) %>% rename(`Observed delay segment` = `Observed delay location`, `Generated source segment` = `Generated source location`), caption = "Delay >5 segment comparison by local rate", align = "rlrrlrrr")
+```
+
+The count-based location tables show that the places where delay is observed are not always the same as the places where delay is generated. Wall St/Pier 11 and East 34th Street are major observed delay locations by count, which is expected given their central role in the ferry network. However, the generated-source rankings shift attention upstream to locations such as East 90th St, and Hunters Point South. This difference supports the value of tracing delay backward through the vessel chain: an operational hotspot may appear downstream as a delayed arrival, while the source event may be located at an earlier landing or segment.
+
+At the segment level, Wall St/Pier 11 -> Dumbo/Fulton Ferry stands out in both observed and generated rankings, making it a particularly important operational corridor. Other generated-source segments, such as Wall St/Pier 11 -> Stuyvesant Cove, Hunters Point South -> East 34th Street, Rockaway -> Sunset Park/BAT, and Corlears Hook -> Dumbo/Fulton Ferry, indicate that delay generation is distributed across both high-volume core segments and longer or more operationally exposed segments.
+
+The rate-based tables provide a different interpretation from the count-based tables. Count rankings identify where the largest number of delayed observations accumulate, which tends to favor high-volume hubs. Local delay rates instead identify locations that are delay-prone relative to their own activity volume. On the observed side, locations such as Rockaway, Ferry Point Park, Soundview, Corlears Hook, and Sunset Park/BAT have high delay rates even when they are not always the largest count locations. On the generated-source side, Stuyvesant Cove, Dumbo/Fulton Ferry, Sunset Park/BAT, East 34th Street, and Brooklyn Navy Yard stand out as source locations with high linked-delay rates.
+
+This distinction is useful for operations. Count-based rankings are most relevant for systemwide burden and passenger exposure, while rate-based rankings are more useful for diagnosing reliability risk at a specific landing or segment. Some high-rate segment results should be interpreted with support in mind, because very small denominators can produce unstable rates. Segments that combine high rates with substantial observation counts are more operationally actionable.
+
+# Delay Recovery
+
+This section focuses only on trip pairs where the next trip inherits more than 5 minutes of delay. Origin recovery means the next trip departs within 1 minute of the median-based expected departure time, using `origin_departure_delay_total <= 1`. Scheduled slack is recomputed with the same logic as the earlier recovery analysis: current trip scheduled origin time minus the previous trip terminal scheduled time for the same vessel.
+
+```{r recovery}
+recovery_existing_dir <- "C:/Data/Spring 2026/CPLN 7900/explore/final/operational_eda/03_delay_recovery"
+recovery_existing_file <- file.path(recovery_existing_dir, "origin_recovery_by_delay_slack.csv")
+
+terminal_rows <- decomp %>%
+  group_by(trip_key) %>%
+  slice_max(order_by = stop_sequence, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(
+    trip_key,
+    terminal_scheduled_time_original = scheduled_time_original
+  )
+
+origin_context <- decomp %>%
+  group_by(trip_key) %>%
+  slice_min(order_by = stop_sequence, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  transmute(
+    trip_key,
+    trip_date = trip_date_et,
+    route_id,
+    direction,
+    vessel_id,
+    schedule_daytype,
+    schedule_season,
+    origin_scheduled_time_original = prev_stop_scheduled_time_original,
+    origin_departure_delay_total,
+    inherited_prev_trip_delay
+  )
+
+recovery_pairs_recomputed <- origin_context %>%
+  left_join(terminal_rows, by = "trip_key") %>%
+  arrange(vessel_id, origin_scheduled_time_original, terminal_scheduled_time_original, trip_key) %>%
+  group_by(vessel_id) %>%
+  mutate(
+    previous_trip_key = lag(trip_key),
+    previous_terminal_scheduled_time_original = lag(terminal_scheduled_time_original),
+    planned_turnaround_gap_min = as.numeric(difftime(origin_scheduled_time_original, previous_terminal_scheduled_time_original, units = "mins"))
+  ) %>%
+  ungroup() %>%
+  mutate(
+    inherited_prev_trip_delay = pmax(as.numeric(inherited_prev_trip_delay), 0, na.rm = FALSE),
+    origin_departure_delay_total = as.numeric(origin_departure_delay_total),
+    origin_recovered_1min = origin_departure_delay_total <= 1,
+    origin_recovered_minutes = inherited_prev_trip_delay - origin_departure_delay_total
+  )
+write_csv(recovery_pairs_recomputed, file.path(report_dir, "recovery_trip_pair_table_recomputed.csv"))
+
+bin_delay_old <- function(x) {
+  case_when(is.na(x) ~ "missing", x < 0 ~ "negative", x <= 5 ~ "0_5", x <= 10 ~ "5_10", x <= 15 ~ "10_15", x <= 20 ~ "15_20", TRUE ~ "20_plus")
+}
+bin_slack_old <- function(x) {
+  case_when(is.na(x) ~ "missing", x < 0 ~ "negative", x <= 5 ~ "0_5", x <= 10 ~ "5_10", x <= 15 ~ "10_15", x <= 20 ~ "15_20", TRUE ~ "20_plus")
+}
+
+old_style_recovery <- recovery_pairs_recomputed %>%
+  mutate(inherited_delay_bin = bin_delay_old(inherited_prev_trip_delay), slack_bin = bin_slack_old(planned_turnaround_gap_min)) %>%
+  group_by(inherited_delay_bin, slack_bin) %>%
+  summarise(n = n(), origin_recovered_1min_rate = mean(origin_recovered_1min, na.rm = TRUE), .groups = "drop")
+
+if (file.exists(recovery_existing_file)) {
+  old_recovery <- read_csv(recovery_existing_file, show_col_types = FALSE) %>% select(inherited_delay_bin, slack_bin, old_n = n, old_origin_recovered_1min_rate = origin_recovered_1min_rate)
+  recovery_consistency <- old_style_recovery %>%
+    full_join(old_recovery, by = c("inherited_delay_bin", "slack_bin")) %>%
+    mutate(n_diff = n - old_n, rate_diff = origin_recovered_1min_rate - old_origin_recovered_1min_rate)
+} else {
+  recovery_consistency <- old_style_recovery %>% mutate(old_n = NA_real_, old_origin_recovered_1min_rate = NA_real_, n_diff = NA_real_, rate_diff = NA_real_)
+}
+write_csv(recovery_consistency, file.path(report_dir, "recovery_consistency_check.csv"))
+recovery_match_flag <- all(replace_na(recovery_consistency$n_diff, 0) == 0) && max(abs(recovery_consistency$rate_diff), na.rm = TRUE) < 1e-12
+
+recovery_base <- recovery_pairs_recomputed %>%
+  mutate(
+    inherited_delay = inherited_prev_trip_delay,
+    slack = planned_turnaround_gap_min,
+    origin_departure_delay = origin_departure_delay_total,
+    origin_recovered = origin_recovered_1min,
+    inherited_delay_bin = case_when(
+      inherited_delay <= 10 ~ "5–10",
+      inherited_delay <= 15 ~ "10–15",
+      inherited_delay <= 20 ~ "15–20",
+      inherited_delay <= 25 ~ "20–25",
+      inherited_delay <= 30 ~ "25–30",
+      TRUE ~ "30+"
+    ),
+    slack_bin = case_when(
+      slack <= 10 ~ "5–10",
+      slack <= 15 ~ "10–15",
+      slack <= 20 ~ "15–20",
+      slack <= 25 ~ "20–25",
+      slack <= 30 ~ "25–30",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(inherited_delay > 5, !is.na(slack), slack >= 5, slack <= 30, !is.na(origin_recovered))
+
+inherit_levels <- c("5–10", "10–15", "15–20", "20–25", "25–30", "30+")
+slack_levels <- c("5–10", "10–15", "15–20", "20–25", "25–30")
+mask_lookup <- tibble(
+  inherited_delay_bin = factor(inherit_levels, levels = inherit_levels),
+  inherited_floor = c(5, 10, 15, 20, 25, 30)
+) %>%
+  crossing(tibble(slack_bin = factor(slack_levels, levels = slack_levels), slack_ceiling = c(10, 15, 20, 25, 30))) %>%
+  mutate(display_cell = inherited_floor < slack_ceiling)
+
+recovery_heatmap_data <- recovery_base %>%
+  mutate(inherited_delay_bin = factor(inherited_delay_bin, levels = inherit_levels), slack_bin = factor(slack_bin, levels = slack_levels)) %>%
+  group_by(inherited_delay_bin, slack_bin) %>%
+  summarise(
+    n = n(),
+    origin_recovery_rate = mean(origin_recovered, na.rm = TRUE),
+    median_inherited_delay = median(inherited_delay, na.rm = TRUE),
+    median_slack = median(slack, na.rm = TRUE),
+    median_origin_departure_delay = median(origin_departure_delay, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(mask_lookup, by = c("inherited_delay_bin", "slack_bin")) %>%
+  filter(display_cell)
+write_csv(recovery_heatmap_data, file.path(report_dir, "origin_recovery_matrix_inherited_gt5.csv"))
+
+recovery_heatmap <- ggplot(recovery_heatmap_data, aes(x = slack_bin, y = inherited_delay_bin, fill = origin_recovery_rate)) +
+  geom_tile(color = "white", linewidth = 0.7) +
+  geom_text(aes(label = paste0(percent(origin_recovery_rate, accuracy = 1), "\n", "n=", n)), size = 3.3) +
+  scale_fill_gradient(low = "#F6DCA8", high = accent, labels = percent_format(), limits = c(0, 1)) +
+  labs(title = "Origin Recovery by Inherited Delay and Slack", x = "Scheduled slack (minutes)", y = "Inherited delay (minutes)", fill = "Recovered") +
+  plot_theme
+
+ggsave(file.path(report_dir, "origin_recovery_heatmap.png"), recovery_heatmap, width = 8.5, height = 5.8, dpi = 300)
+
+scatter_data <- recovery_pairs_recomputed %>%
+  mutate(inherited_delay = inherited_prev_trip_delay, slack = planned_turnaround_gap_min, origin_recovered = origin_recovered_1min) %>%
+  filter(inherited_delay > 5, !is.na(slack), slack >= 5, slack <= 30, inherited_delay <= 40, !is.na(origin_recovered))
+
+recovery_scatter <- ggplot(scatter_data, aes(x = inherited_delay, y = slack, color = origin_recovered)) +
+  geom_point(alpha = 0.3, size = 1.2) +
+  coord_cartesian(ylim = c(5, 30), xlim = c(5, 40)) +
+  scale_color_manual(values = c(`TRUE` = accent, `FALSE` = coral), labels = c(`TRUE` = "Recovered", `FALSE` = "Not recovered")) +
+  labs(title = "Origin Recovery Scatter", x = "Inherited delay (minutes)", y = "Scheduled slack (minutes)", color = NULL) +
+  plot_theme
+
+ggsave(file.path(report_dir, "origin_recovery_scatter.png"), recovery_scatter, width = 8.5, height = 5.8, dpi = 300)
+
+recovery_insight <- recovery_heatmap_data %>%
+  mutate(slack_minus_inherited = median_slack - median_inherited_delay) %>%
+  summarise(
+    near_slack_recovery = mean(origin_recovery_rate[slack_minus_inherited >= 0 & slack_minus_inherited < 10], na.rm = TRUE),
+    ten_plus_recovery = mean(origin_recovery_rate[slack_minus_inherited >= 10], na.rm = TRUE)
+  )
+```
+
+```{r recovery-output, fig.cap="Origin recovery among trips inheriting more than 5 minutes of delay."}
+print(recovery_heatmap)
+print(recovery_scatter)
+```
+
+The recovery heatmap shows a clear interaction between inherited delay and scheduled slack. When inherited delay is only 5–10 minutes, recovery becomes much more likely as slack increases: recovery is 13% with 5–10 minutes of slack, 31% with 10–15 minutes, and reaches 70–83% once slack is above 15 minutes. For inherited delay of 10–15 minutes, recovery remains rare until slack reaches at least 15–20 minutes, and the recovery rate is highest when slack is 20 minutes or more.
+
+The scatter plot confirms the heatmap pattern at the trip-pair level. Recovered trips cluster in the upper-left portion of the plot, where inherited delay is relatively small and scheduled slack is relatively large. Not-recovered trips dominate when inherited delay is large or when slack is concentrated below roughly 10–15 minutes. The horizontal bands reflect the scheduled nature of turnaround slack, while the spread in inherited delay shows that similar slack levels can face very different recovery demands.
+
+# Conclusion
+
+Together, these EDA modules show that ferry delay is operationally structured. Trip notes identify recurring disruption categories, with passenger delays, marine traffic, vessel mechanical issues, weather, and USCG restrictions pointing to different types of operational risk. The decomposition shows that delayed stop observations are dominated by inherited and carried delay rather than only newly generated local delay. Genesis tracing further shows that the place where delay is observed is not always the place where delay is generated; upstream landings and segments can create delay that is recorded later downstream. Finally, the recovery analysis shows that scheduled slack can absorb moderate inherited delay, but recovery becomes unlikely when inherited delay is large or when slack is only marginal. These findings support an operational framing focused on propagation, upstream source locations, and recovery capacity across vessel chains.
+
+
