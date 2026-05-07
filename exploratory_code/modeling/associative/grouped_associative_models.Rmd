@@ -5,12 +5,13 @@ author: "Project Team"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 options(scipen = 999, dplyr.summarise.inform = FALSE)
 ```
 
-```{r packages}
-required_pkgs <- c("dplyr", "tidyr", "arrow", "broom", "knitr", "readr")
+```{r packages, include=FALSE}
+required_pkgs <- c("dplyr", "tidyr", "arrow", "broom", "knitr", "readr",
+  "car", "ggplot2", "stringr", "forcats")
 missing_pkgs <- required_pkgs[!vapply(required_pkgs, requireNamespace, logical(1), quietly = TRUE)]
 if (length(missing_pkgs) > 0) stop("Missing packages: ", paste(missing_pkgs, collapse = ", "))
 
@@ -22,17 +23,20 @@ library(knitr)
 library(readr)
 library(car)
 library(ggplot2)
+library(stringr)
+library(broom)
+library(forcats)
 ```
 
 ## 1) Associative Model Objective and Design
 
-This section presents the associative model used to explain stop-level arrival delay. The goal of this model is interpretation rather than advance prediction: we use it to assess how delay is associated with structural, environmental, temporal, operational, and vessel-related factors.
+This section presents an associative model for explaining stop-level arrival lateness in the NYC Ferry system. The goal is interpretation rather than advance prediction. Instead of asking only whether a future trip will be delayed, this model asks which historical factors are associated with observed delay patterns.
 
-The dependent variable is stop-level arrival lateness in minutes relative to the original schedule. Predictors are organized into five explanatory domains: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics. This grouped specification allows the associative model to compare how different domains contribute to observed delay variation while preserving a single coherent modeling framework.
+The unit of analysis is a stop-level observation. The dependent variable is arrival lateness in minutes relative to the original schedule. Predictors are organized into five explanatory domains: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics.
 
-Model preparation steps, including variable screening, imputation, and final specification, are described in the following sections.
+This grouped design allows us to compare how different types of factors contribute to delay variation while keeping the final model interpretable for operational use.
 
-```{r settings}
+```{r settings, include=FALSE}
 set.seed(7900)
 
 input_parquet <- "E:/MUSA/8010practicum/outputs/direct_pipeline_final_20260327/baseline_modeling_table_final_direct.parquet"
@@ -59,11 +63,9 @@ candidate_predictors <- c(
 prior_delay_predictors <- c("inherited_prev_trip_delay", "carried_within_trip_delay")
 ```
 
-## 2) Outcome, Unit of Analysis, and Data Scope
+## 2) Data Scope
 
-The associative model uses the stop-level baseline modeling table as its input dataset. The unit of analysis is a stop-level observation, and the dependent variable is arrival lateness in minutes relative to the original schedule.
-
-The predictor set is structured to capture multiple dimensions of delay association within a single modeling framework. Variables are organized into five explanatory domains: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics. Together, these domains define the scope of the associative model and provide the basis for later specification and estimation.
+The model uses the stop-level baseline modeling table as its input dataset. After loading the data, we confirmed the number of records and the availability of candidate predictors before fitting the associative models.
 
 ```{r load, include=FALSE}
 if (!file.exists(input_parquet)) stop("Missing input parquet: ", input_parquet)
@@ -84,7 +86,7 @@ tibble(
   predictors_with_prior_n = length(predictors_with_prior)
 ) %>% kable(caption = "Data Scope and Predictor Availability")
 ```
-The full predictor pool was organized into five explanatory domains: structural context (such as route and stop configuration), environmental conditions, temporal patterns, operational propagation, and vessel characteristics.
+
 
 ## 3) Predictor Domains
 
@@ -112,16 +114,18 @@ The vessel domain captures systematic differences associated with vessel capacit
 
 
 ## 4) Data Preparation
-This section summarizes the data preparation steps used before model estimation. These steps were intended to preserve a usable stop-level modeling table while keeping the final associative model interpretable. Preparation focused on variable construction, treatment of missing AIS and environmental fields, and a small set of reusable modeling utilities used later in the analysis.
+
+Before model estimation, the stop-level modeling table was prepared to support a consistent and interpretable associative model. This section summarizes the key preparation steps: variable construction, missing-value treatment for environmental fields, and helper functions used for model fitting and summary extraction.
 
 ### 4.1 Data Cleaning and Variable Construction
-The stop-level modeling table was standardized before estimation so that the associative model could be fit on a consistent analytic dataset. This preparation included defining the trip date field used in time-based processing, confirming the availability of candidate predictors in the loaded table, and retaining only variables relevant to the associative model outcome and explanatory domains.
 
-### 4.2 AIS and Environmental Variable Imputation
+The input table was converted into a stop-level analytic dataset. We created a trip date field from the trip identifier, checked which candidate predictors were available, and retained variables needed for the outcome and domain-based model structure.
 
-Missing values in AIS and environmental variables were imputed using a local time-slot rolling rule. The primary fill used observations from the same scheduled hour within a centered seven-day window around the trip date. When no such value was available, the procedure fell back to the same scheduled hour group within the same centered window.
+### 4.2 Environmental Variable Imputation
 
-This approach was designed to retain environmental predictors that would otherwise be lost through complete-case filtering, while still using temporally local information tied to comparable operating periods.
+Missing environmental values were imputed using a local time-slot rolling rule. The primary fill used observations from the same scheduled hour within a centered seven-day window around the trip date. If no value was available, the method fell back to the same scheduled hour group within the same centered window.
+
+This approach keeps environmental predictors in the model without relying only on complete-case filtering. It also keeps the imputed values tied to nearby dates and comparable operating periods.
 
 ```{r impute, include=FALSE}
 build_week_fill_map <- function(day_slot_tbl, group_col, date_col = "trip_date", value_col = "slot_day_median", window_days = 3) {
@@ -212,10 +216,21 @@ for (v in impute_vars) {
 imputation_summary <- bind_rows(impute_summary_list)
 ```
 
+```{r imputation-summary, echo=FALSE}
+imputation_summary %>%
+  mutate(
+    pct_missing_before = round(n_missing_before / nrow(df) * 100, 2),
+    pct_missing_after = round(n_missing_after / nrow(df_imp) * 100, 2)
+  ) %>%
+  kable(
+    caption = "Summary of Environmental Variable Imputation",
+    digits = 2
+  )
+```
+
 ### 4.3 Modeling Utilities
 
-A small set of helper functions was defined to standardize model input preparation, linear-model fitting, and summary extraction across the associative model workflow.
-
+A small set of reusable helper functions was created to prepare model inputs, fit linear models, extract model metrics, and generate standardized coefficient summaries.
 ```{r helpers, include=FALSE}
 prepare_model_df <- function(data, outcome, predictors) {
   data %>% select(all_of(c(outcome, predictors))) %>% drop_na()
@@ -284,12 +299,12 @@ fit_standardized_linear <- function(data, model_name, outcome, predictors) {
 
 ## 5) Variable Screening and Final Specification
 
-This section documents how the final associative-model specification was defined from the broader predictor pool. Screening focused on preserving interpretable coverage across the five explanatory domains while reducing redundancy among closely related measures. Rather than maximizing the number of included variables, the goal was to retain a smaller specification that remained substantively meaningful and statistically stable.
+This section explains how the final associative-model specification was selected from the broader predictor pool. The goal was not to include every available variable, but to keep interpretable coverage across the five explanatory domains while reducing redundancy among closely related predictors.
 
 ### 5.1 Initial Candidate Variables
 
-The initial predictor pool was intentionally broad so that each explanatory domain would be represented in the associative model. Candidate variables included route and stop structure, environmental conditions, temporal indicators, operational propagation terms, and vessel-related characteristics. This broader pool provided the starting point for defining a final specification that remained domain-complete but more interpretable.
-```{r}
+The initial predictor pool was intentionally broad so that each explanatory domain was represented. Candidate variables included route and stop structure, environmental conditions, temporal indicators, operational propagation terms, and vessel/load-related characteristics. This broader pool provided the starting point for a smaller, more interpretable final specification.
+```{r domain-predictors, include=FALSE}
 domain_a_predictors <- intersect(c(
   "route_id",
   "direction",
@@ -322,7 +337,11 @@ domain_d_predictors <- intersect(c(
 
 domain_e_predictors <- intersect(c(
   "vessel_capacity",
-  "vessel_trip_seq_in_chain"
+  "vessel_trip_seq_in_chain",
+  "prev_stop_boardings",
+  "prev_stop_alightings",
+  "prev_stop_onboard",
+  "prev_stop_load_factor"
 ), names(df_imp))
 
 final_predictors <- unique(c(
@@ -338,7 +357,7 @@ final_predictors <- unique(c(
 Because several candidate predictors measured closely related aspects of stop position, ridership, and operating context, we reviewed pairwise correlations among numeric predictors before fitting the final associative model. The goal was not to eliminate all correlation, but to identify clusters of variables that conveyed largely overlapping information and would make coefficient interpretation less clear.
 
 
-```{r corr_setup}
+```{r corr_setup, include=FALSE}
 numeric_candidate_predictors <- intersect(
   candidate_predictors,
   names(df_imp)[sapply(df_imp, is.numeric)]
@@ -350,7 +369,7 @@ corr_vars <- df_imp %>%
 
 corr_matrix <- cor(corr_vars, use = "pairwise.complete.obs")
 ```
-The figure below highlights a subset of strongly related variables that were reviewed during specification design.
+The figure below highlights selected variables reviewed during specification design. These variables are related to stop position and previous-stop load conditions, so they were checked carefully before finalizing the model.
 ```{r corr_plot_focus, fig.width=6, fig.height=5}
 focus_vars <- c(
   "stop_sequence",
@@ -405,16 +424,18 @@ corr_pairs <- as.data.frame(as.table(corr_matrix)) %>%
   select(var1, var2, corr, abs_corr)
 
 corr_pairs %>%
-  head(20) %>%
+  head(10) %>%
   kable(caption = "Highly correlated candidate predictor pairs (|r| >= 0.7)")
 ```
 ### 5.3 Final Variable Set
 
-The final variable set was selected to preserve coverage across the five explanatory domains while avoiding unnecessary duplication among closely related measures. When multiple predictors represented similar underlying information, we prioritized variables that were easier to interpret operationally or that provided a clearer link to the domain being represented. The result is a reduced final specification intended to support stable estimation and clearer domain-level interpretation in the associative model.
-```{r vif_setup}
+The final variable set was selected to preserve coverage across the five explanatory domains while avoiding unnecessary duplication. When multiple variables represented similar information, we prioritized predictors that were easier to interpret operationally and more directly connected to the domain being represented.
+
+After reviewing correlation patterns, we removed redundant candidate variables and retained a reduced final specification for the combined associative model.
+```{r vif_setup, include=FALSE}
 final_predictors_trimmed <- setdiff(
   final_predictors,
-  c("prev_stop_sequence", "prev_stop_load_factor", "prev_stop_sched_hour_group")
+  c("prev_stop_sequence", "prev_stop_sched_hour_group")
 )
 
 tibble(
@@ -423,7 +444,7 @@ tibble(
 ) %>%
   kable(caption = "Predictor count in the final combined associative specification")
 ```
-```{r vif_run}
+```{r vif_run, include=FALSE}
 fit_vif_model <- function(data, outcome, predictors) {
   vars_needed <- unique(c(outcome, predictors))
   model_df <- data %>%
@@ -459,12 +480,12 @@ extract_vif_table <- function(model, model_name) {
 vif_model_final <- fit_vif_model(df_imp, outcome_cont, final_predictors_trimmed)
 vif_table_final <- extract_vif_table(vif_model_final, "Final combined associative model")
 ```
-
+We then checked variance inflation factors for the final combined specification. For multi-level categorical predictors, we report the adjusted GVIF, which is more comparable across terms with different degrees of freedom.
 ```{r vif_table}
 if ("adjusted_vif" %in% names(vif_table_final)) {
   vif_table_final %>%
     arrange(desc(adjusted_vif)) %>%
-    head(20) %>%
+    head(10) %>%
     mutate(
       gvif = round(gvif, 2),
       adjusted_vif = round(adjusted_vif, 2)
@@ -473,7 +494,7 @@ if ("adjusted_vif" %in% names(vif_table_final)) {
 } else {
   vif_table_final %>%
     arrange(desc(vif)) %>%
-    head(20) %>%
+    head(10) %>%
     mutate(vif = round(vif, 2)) %>%
     kable(caption = "Top VIF results for the final combined associative specification")
 }
@@ -487,6 +508,7 @@ The associative model was estimated in two parts. First, we fit domain-specific 
 To assess the explanatory role of each factor group, we estimated separate linear models for the five domains defined earlier: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics. Each model used the same dependent variable—stop-level arrival lateness in minutes—but included only the predictors assigned to that domain.
 
 These domain-specific models were not intended as competing final models. Instead, they were used to show how much variation in delay could be associated with each domain when considered on its own.
+
 ```{r fit}
 df_model <- df_imp
 
@@ -496,7 +518,7 @@ model_results <- list(
   domain_c_temporal = fit_linear(df_model, "domain_c_temporal", outcome_cont, domain_c_predictors),
   domain_d_operational = fit_linear(df_model, "domain_d_operational", outcome_cont, domain_d_predictors),
   domain_e_vessel = fit_linear(df_model, "domain_e_vessel", outcome_cont, domain_e_predictors),
-  combined_associative = fit_linear(df_model, "combined_associative", outcome_cont, final_predictors)
+  combined_associative = fit_linear(df_model, "combined_associative", outcome_cont, final_predictors_trimmed)
 )
 ```
 
@@ -574,20 +596,693 @@ env_feature_table %>%
   kable(caption = "Standardized Coefficients for Environmental Predictors")
 ```
 ```{r}
-env_feature_table %>%
-  mutate(term = reorder(term, abs_estimate)) %>%
-  ggplot(aes(x = term, y = estimate)) +
-  geom_col() +
-  coord_flip() +
+structural_feature_table <- fit_standardized_linear(
+  df_model,
+  "domain_a_structural",
+  outcome_cont,
+  domain_a_predictors
+)
+
+structural_feature_table %>%
+  select(term, estimate, std.error, statistic, p.value, abs_estimate) %>%
+  mutate(
+    estimate = round(estimate, 4),
+    std.error = round(std.error, 4),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 4),
+    abs_estimate = round(abs_estimate, 4)
+  ) %>%
+  kable(caption = "Standardized Coefficients for Structural Predictors")
+```
+
+```{r}
+vessel_feature_table <- fit_standardized_linear(
+  df_model,
+  "domain_e_vessel_demand",
+  outcome_cont,
+  domain_e_predictors
+)
+
+vessel_feature_table %>%
+  select(term, estimate, std.error, statistic, p.value, abs_estimate) %>%
+  mutate(
+    estimate = round(estimate, 4),
+    std.error = round(std.error, 4),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 4),
+    abs_estimate = round(abs_estimate, 4)
+  ) %>%
+  kable(caption = "Standardized Coefficients for Demand and Vessel Predictors")
+```
+
+```{r}
+operational_feature_table <- fit_standardized_linear(
+  df_model,
+  "domain_d_operational",
+  outcome_cont,
+  domain_d_predictors
+)
+
+operational_feature_table %>%
+  select(term, estimate, std.error, statistic, p.value, abs_estimate) %>%
+  mutate(
+    estimate = round(estimate, 4),
+    std.error = round(std.error, 4),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 4),
+    abs_estimate = round(abs_estimate, 4)
+  ) %>%
+  kable(caption = "Standardized Coefficients for Operational Propagation Predictors")
+```
+
+
+```{r}
+temporal_feature_table <- fit_standardized_linear(
+  df_model,
+  "domain_c_temporal",
+  outcome_cont,
+  domain_c_predictors
+)
+
+temporal_feature_table %>%
+  select(term, estimate, std.error, statistic, p.value, abs_estimate) %>%
+  mutate(
+    estimate = round(estimate, 4),
+    std.error = round(std.error, 4),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 4),
+    abs_estimate = round(abs_estimate, 4)
+  ) %>%
+  kable(caption = "Standardized Coefficients for Temporal Predictors")
+```
+
+```{r}
+
+selected_predictors <- intersect(c(
+
+  "inherited_prev_trip_delay",
+  "route_id",
+
+  "schedule_season",
+  "prev_stop_sched_hour_group",
+  "schedule_daytype",
+  "env_temperature_c",
+
+  "env_wind_speed_mps",
+  "env_precipitation_mm",
+  "env_battery_water_level_obs",
+
+  "stop_sequence"
+), names(df_model))
+
+selected_model_df <- prepare_model_df(
+  df_model,
+  outcome_cont,
+  selected_predictors
+)
+
+selected_formula <- as.formula(
+  paste(
+    outcome_cont,
+    "~",
+    paste(selected_predictors, collapse = " + "),
+    "+ prev_stop_sched_hour_group:schedule_daytype"
+  )
+)
+
+selected_fit <- lm(selected_formula, data = selected_model_df)
+
+selected_metrics <- broom::glance(selected_fit) %>%
+  transmute(
+    model = "Selected compact associative model",
+    n = nobs(selected_fit),
+    rsq = r.squared,
+    adj_rsq = adj.r.squared,
+    rmse = sqrt(mean(residuals(selected_fit)^2)),
+    aic = AIC(selected_fit),
+    bic = BIC(selected_fit)
+  )
+
+selected_metrics %>%
+  mutate(
+    rsq = round(rsq, 4),
+    adj_rsq = round(adj_rsq, 4),
+    rmse = round(rmse, 4),
+    aic = round(aic, 0),
+    bic = round(bic, 0)
+  ) %>%
+  kable(caption = "Selected Compact Associative Model Fit")
+```
+
+```{r selected_compact_model_standardized_coefficients}
+# --- Standardized coefficient strength for selected compact model ---
+
+x_mat <- model.matrix(selected_formula, data = selected_model_df)
+x_mat <- x_mat[, colnames(x_mat) != "(Intercept)", drop = FALSE]
+
+x_sd <- apply(x_mat, 2, sd, na.rm = TRUE)
+x_mat <- x_mat[, is.finite(x_sd) & x_sd > 0, drop = FALSE]
+
+x_scaled <- scale(x_mat)
+y_scaled <- as.numeric(scale(selected_model_df[[outcome_cont]]))
+
+std_df <- as.data.frame(x_scaled, check.names = FALSE)
+std_df$.y_scaled <- y_scaled
+
+selected_std_fit <- lm(.y_scaled ~ ., data = std_df)
+
+selected_std_coef <- broom::tidy(selected_std_fit) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    standardized_strength = abs(estimate),
+    abs_statistic = abs(statistic)
+  ) %>%
+  arrange(desc(standardized_strength))
+
+selected_std_coef %>%
+  select(term, standardized_strength, std.error, abs_statistic, p.value) %>%
+  mutate(
+    standardized_strength = round(standardized_strength, 4),
+    std.error = round(std.error, 4),
+    abs_statistic = round(abs_statistic, 2),
+    p.value = round(p.value, 4)
+  ) %>%
+  kable(caption = "Standardized Coefficient Strength for Selected Compact Model")
+```
+
+```{r}
+route_summary <- df_model %>%
+  group_by(route_id) %>%
+  summarise(
+    avg_delay = mean(.data[[outcome_cont]], na.rm = TRUE),
+    avg_expected_water_min = mean(expected_water_min, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+ggplot(route_summary, aes(x = avg_expected_water_min, y = avg_delay, label = route_id)) +
+  geom_point(size = 3) +
+  geom_text(nudge_y = 0.15) +
+  geom_smooth(method = "lm", se = FALSE) +
   labs(
-    title = "Environmental Predictors in the Associative Model",
-    x = NULL,
-    y = "Standardized coefficient"
+    title = "Route Travel Time vs Average Lateness",
+    x = "Average expected water travel time (minutes)\n(proxy for route length / exposure)",
+    y = "Average lateness (minutes)"
   ) +
   theme_minimal()
 ```
 
-Temperature is the strongest predictor within the environmental domain by a substantial margin. Wind speed, observed water level, and observed current are the next most important variables, while visibility, current residual, and precipitation are weaker. Although the environmental domain explains only a small share of total delay variation overall, its internal structure is not flat: some external-condition variables are clearly more informative than others.
+```{r excessive_delay_components_plot, fig.width=8, fig.height=4}
+delay_components <- tibble::tibble(
+  component = c(
+    "Inherited previous delay",
+    "Carried within-trip delay",
+    "New delay at current stop"
+  ),
+  minutes = c(6.24, 1.85, 1.68)
+) %>%
+  mutate(
+    component = factor(
+      component,
+      levels = c(
+        "Inherited previous delay",
+        "Carried within-trip delay",
+        "New delay at current stop"
+      )
+    )
+  )
+
+ggplot(delay_components, aes(x = "Excessive delay example", y = minutes, fill = component)) +
+  geom_col(width = 0.45) +
+  geom_text(
+    aes(label = paste0(minutes, " min")),
+    position = position_stack(vjust = 0.5),
+    color = "white",
+    fontface = "bold",
+    size = 4
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Inherited previous delay" = "#EB5600",
+      "Carried within-trip delay" = "#1A9988",
+      "New delay at current stop" = "#C7C7C7"
+    )
+  ) +
+  labs(
+    title = "Where Does Excessive Delay Come From?",
+    subtitle = "Most excessive delay is inherited or carried forward, not newly created at the current stop",
+    x = NULL,
+    y = "Minutes of delay",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+```
+
+
+```{r delay_accumulation_by_stop_sequence, fig.width=8, fig.height=5}
+delay_accumulation <- df_model %>%
+  group_by(route_id, stop_sequence) %>%
+  summarise(
+    avg_lateness = mean(.data[[outcome_cont]], na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  filter(n >= 100)
+
+ggplot(delay_accumulation, aes(x = stop_sequence, y = avg_lateness, color = route_id)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.8) +
+  labs(
+    title = "Delay Accumulation Along Route",
+    subtitle = "Average lateness tends to change as trips move through stop sequence",
+    x = "Stop sequence",
+    y = "Average lateness (minutes)",
+    color = "Route"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+
+```{r time_of_day_delay_plot, fig.width=8, fig.height=5}
+
+possible_lateness_cols <- c(
+  if (exists("outcome_cont")) outcome_cont else character(0),
+  "arr_lateness",
+  "arr_late_min",
+  "arrival_lateness",
+  "arrival_time_variance",
+  "arrivaltimevariance",
+  "ArrivalTimeVariance",
+  "delay_min",
+  "lateness"
+)
+
+lateness_col <- possible_lateness_cols[possible_lateness_cols %in% names(df_model)][1]
+
+if (is.na(lateness_col)) {
+  stop("Could not find the lateness column. Please run: names(df_model)[grepl('late|delay|variance|arrival', names(df_model), ignore.case = TRUE)]")
+}
+
+# 2. Create summary table
+time_delay_summary <- df_model %>%
+  mutate(lateness_for_plot = .data[[lateness_col]]) %>%
+  filter(
+    !is.na(prev_stop_sched_hour_group),
+    !is.na(schedule_daytype),
+    !is.na(lateness_for_plot)
+  ) %>%
+  group_by(prev_stop_sched_hour_group, schedule_daytype) %>%
+  summarise(
+    avg_lateness = mean(lateness_for_plot, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  )
+
+# 3. Plot
+time_delay_summary <- df_model %>%
+  mutate(lateness_for_plot = .data[[lateness_col]]) %>%
+  filter(
+    !is.na(prev_stop_sched_hour_group),
+    !is.na(schedule_daytype),
+    !is.na(lateness_for_plot)
+  ) %>%
+  group_by(prev_stop_sched_hour_group, schedule_daytype) %>%
+  summarise(
+    avg_lateness = mean(lateness_for_plot, na.rm = TRUE),
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    prev_stop_sched_hour_group = factor(
+      prev_stop_sched_hour_group,
+      levels = c("5_8", "9_11", "12_14", "15_17", "18_22")
+    )
+  )
+
+ggplot(
+  time_delay_summary,
+  aes(
+    x = prev_stop_sched_hour_group,
+    y = avg_lateness,
+    fill = schedule_daytype
+  )
+) +
+  geom_col(position = position_dodge(width = 0.55), width = 0.38) +
+  scale_fill_manual(
+    values = c(
+      "WEEKDAY" = "#EB5600",
+      "WEEKEND" = "#1A9988"
+    )
+  ) +
+  labs(
+    title = "Average Lateness by Time Bin and Day Type",
+    x = "Scheduled time bin",
+    y = "Average lateness (minutes)",
+    fill = "Day type"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+```{r time_of_day_delay_plot, fig.width=8, fig.height=5}
+ggplot(
+  time_delay_summary,
+  aes(
+    x = prev_stop_sched_hour_group,
+    y = avg_lateness,
+    fill = schedule_daytype
+  )
+) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.6) +
+  scale_fill_manual(
+    values = c(
+      "WEEKDAY" = "#EB5600",
+      "WEEKEND" = "#1A9988"
+    )
+  ) +
+  labs(
+    title = "Average Lateness by Time Bin and Day Type",
+    x = "Scheduled time bin",
+    y = "Average lateness (minutes)",
+    fill = "Day type"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+```
+
+---
+
+
+```{r temperature_lateness_plot, fig.width=8, fig.height=5}
+ggplot(temp_delay_summary, aes(x = avg_temperature, y = avg_lateness)) +
+  geom_point(color = "#1A9988", size = 2.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "#EB5600") +
+  labs(
+    title = "Temperature and Average Lateness",
+    x = "Average temperature (°C)",
+    y = "Average lateness (minutes)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    plot.title = element_text(face = "bold")
+  )
+```
+
+```{r}
+# --- Top 10 coefficient bar chart for Domain B / C / E ---
+
+# Add demand/load variables into Domain E for this chart
+domain_e_plot_predictors <- intersect(c(
+  domain_e_predictors,
+  "prev_stop_boardings",
+  "prev_stop_alightings",
+  "prev_stop_onboard",
+  "prev_stop_load_factor"
+), names(df_model))
+
+# Predictors to show in the chart: Domain B + C + updated E
+bce_predictors <- unique(c(
+  domain_b_predictors,
+  domain_c_predictors,
+  domain_e_plot_predictors
+))
+
+# Rebuild final predictors for this plot model
+plot_model_predictors <- unique(c(
+  domain_a_predictors,
+  domain_b_predictors,
+  domain_c_predictors,
+  domain_d_predictors,
+  domain_e_plot_predictors
+))
+
+# Standardize numeric predictors
+numeric_predictors <- plot_model_predictors[
+  sapply(df_model[plot_model_predictors], is.numeric)
+]
+
+df_model_std <- df_model %>%
+  mutate(across(
+    all_of(numeric_predictors),
+    ~ as.numeric(scale(.x))
+  ))
+
+# Fit a direct lm model
+plot_formula <- as.formula(
+  paste(outcome_cont, "~", paste(plot_model_predictors, collapse = " + "))
+)
+
+combined_std_fit <- lm(plot_formula, data = df_model_std)
+
+# Domain lookup
+domain_lookup <- tibble(
+  variable = bce_predictors,
+  domain = case_when(
+    variable %in% domain_b_predictors ~ "Environmental Conditions",
+    variable %in% domain_c_predictors ~ "Temporal Patterns",
+    variable %in% domain_e_plot_predictors ~ "Vessel / Demand-Load Context",
+    TRUE ~ "Other"
+  )
+)
+
+# Readable labels
+label_lookup <- c(
+  env_temperature_c = "Temperature",
+  env_wind_speed_mps = "Wind speed",
+  env_visibility_m = "Visibility",
+  env_precipitation_mm = "Precipitation",
+  env_battery_water_level_obs = "Water level",
+  env_battery_water_level_anomaly = "Water-level anomaly",
+  env_narrows_current_obs = "Current",
+  env_narrows_current_residual = "Current residual",
+
+  prev_stop_sched_hour = "Previous scheduled hour",
+  prev_stop_sched_hour_group = "Previous scheduled hour group",
+  schedule_season = "Schedule season",
+  schedule_daytype = "Schedule day type",
+
+  vessel_capacity = "Vessel capacity",
+  vessel_trip_seq_in_chain = "Vessel trip sequence",
+  prev_stop_boardings = "Boardings",
+  prev_stop_alightings = "Alightings",
+  prev_stop_onboard = "Onboard count",
+  prev_stop_load_factor = "Load factor"
+)
+
+# Helper: match coefficient term back to base variable
+get_base_var <- function(term, vars) {
+  hits <- vars[vapply(vars, function(v) startsWith(term, v), logical(1))]
+  if (length(hits) == 0) return(NA_character_)
+  hits[which.max(nchar(hits))]
+}
+
+# Build plotting dataframe
+# --- Build coefficient table for plotting ---
+
+coef_plot_df <- broom::tidy(combined_std_fit) %>%
+  filter(term != "(Intercept)") %>%
+  rowwise() %>%
+  mutate(variable = get_base_var(term, bce_predictors)) %>%
+  ungroup() %>%
+  filter(!is.na(variable)) %>%
+  mutate(
+    domain = case_when(
+      variable %in% domain_b_predictors ~ "Environmental Conditions",
+      variable %in% domain_c_predictors ~ "Temporal Patterns",
+      variable %in% domain_e_plot_predictors ~ "Demand and Vessel Context",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  filter(domain != "Other") %>%
+  filter(
+    !str_detect(term, "^schedule_season"),
+    !variable %in% c(
+      "prev_stop_load_factor",   # remove load factor
+      "prev_stop_onboard",       # optional: remove onboard if you feel redundant
+      "vessel_trip_seq_in_chain" # optional: keep chart cleaner
+    )
+  ) %>%
+  mutate(
+    clean_label = if_else(
+      variable %in% names(label_lookup),
+      unname(label_lookup[variable]),
+      variable
+    ),
+    clean_label = case_when(
+      variable == "schedule_daytype" ~ str_replace(term, variable, "Schedule day type "),
+      variable == "prev_stop_sched_hour_group" ~ str_replace(term, variable, "Previous scheduled hour "),
+      TRUE ~ clean_label
+    ),
+    abs_estimate = abs(estimate)
+  )
+
+# --- Select top terms by domain ---
+coef_plot_top <- bind_rows(
+  coef_plot_df %>%
+    filter(domain == "Environmental Conditions") %>%
+    slice_max(abs_estimate, n = 4, with_ties = FALSE),
+
+  coef_plot_df %>%
+    filter(domain == "Temporal Patterns") %>%
+    slice_max(abs_estimate, n = 3, with_ties = FALSE),
+
+  coef_plot_df %>%
+    filter(domain == "Demand and Vessel Context") %>%
+    slice_max(abs_estimate, n = 4, with_ties = FALSE)
+) %>%
+  distinct(term, .keep_all = TRUE) %>%
+  arrange(abs_estimate)
+
+# --- Plot absolute coefficients only ---
+ggplot(
+  coef_plot_top,
+  aes(
+    x = reorder(clean_label, abs_estimate),
+    y = abs_estimate,
+    fill = domain
+  )
+) +
+  geom_col(width = 0.72) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c(
+      "Environmental Conditions" = "#1A9988",
+      "Temporal Patterns" = "#7A7A7A",
+      "Demand and Vessel Context" = "#EB5600"
+    )
+  ) +
+  labs(
+    title = "Monitorable Signals Beyond Prior Delay",
+    x = NULL,
+    y = "Absolute standardized coefficient",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.major.y = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
+```
+```{r}
+# --- Raw coefficient strength for Domain B / C / E ---
+
+bce_predictors <- unique(c(
+  domain_b_predictors,
+  domain_c_predictors,
+  domain_e_predictors
+))
+
+domain_lookup_bce <- tibble(
+  variable = bce_predictors,
+  domain = case_when(
+    variable %in% domain_b_predictors ~ "Domain B: Environmental Conditions",
+    variable %in% domain_c_predictors ~ "Domain C: Temporal Patterns",
+    variable %in% domain_e_predictors ~ "Domain E: Demand and Vessel Context",
+    TRUE ~ "Other"
+  )
+)
+
+label_lookup <- c(
+  env_temperature_c = "Temperature",
+  env_wind_speed_mps = "Wind speed",
+  env_visibility_m = "Visibility",
+  env_precipitation_mm = "Precipitation",
+  env_battery_water_level_obs = "Water level",
+  env_battery_water_level_anomaly = "Water-level anomaly",
+  env_narrows_current_obs = "Current",
+  env_narrows_current_residual = "Current residual",
+
+  prev_stop_sched_hour = "Scheduled hour",
+  schedule_season = "Schedule season",
+  schedule_daytype = "Schedule day type",
+
+  vessel_capacity = "Vessel capacity",
+  vessel_trip_seq_in_chain = "Vessel trip sequence",
+  prev_stop_boardings = "Boardings",
+  prev_stop_alightings = "Alightings",
+  prev_stop_onboard = "Onboard count",
+  prev_stop_load_factor = "Load factor"
+)
+
+get_base_var <- function(term, vars) {
+  hits <- vars[vapply(vars, function(v) startsWith(term, v), logical(1))]
+  if (length(hits) == 0) return(NA_character_)
+  hits[which.max(nchar(hits))]
+}
+
+combined_model_df <- prepare_model_df(
+  df_model,
+  outcome_cont,
+  final_predictors_trimmed
+)
+
+combined_formula <- as.formula(
+  paste(outcome_cont, "~", paste(final_predictors_trimmed, collapse = " + "))
+)
+
+combined_raw_fit <- lm(combined_formula, data = combined_model_df)
+
+coef_bce_raw <- broom::tidy(combined_raw_fit) %>%
+  filter(term != "(Intercept)") %>%
+  rowwise() %>%
+  mutate(variable = get_base_var(term, bce_predictors)) %>%
+  ungroup() %>%
+  filter(!is.na(variable)) %>%
+  left_join(domain_lookup_bce, by = "variable") %>%
+  mutate(
+    feature_label = if_else(
+      variable %in% names(label_lookup),
+      unname(label_lookup[variable]),
+      variable
+    ),
+    feature_label = case_when(
+      variable %in% c("schedule_daytype", "schedule_season") ~
+        str_replace(term, variable, paste0(feature_label, " ")),
+      TRUE ~ feature_label
+    ),
+    coefficient_strength = abs(estimate),
+    abs_statistic = abs(statistic)
+  ) %>%
+  arrange(desc(coefficient_strength)) %>%
+  select(
+    domain,
+    feature_label,
+    term,
+    coefficient_strength,
+    std.error,
+    abs_statistic,
+    p.value
+  )
+
+coef_bce_raw %>%
+  mutate(
+    coefficient_strength = round(coefficient_strength, 4),
+    std.error = round(std.error, 4),
+    abs_statistic = round(abs_statistic, 2),
+    p.value = round(p.value, 4)
+  ) %>%
+  kable(caption = "Raw Coefficient Strength for Domain B / C / E Features")
+```
+
 
 
 ### 7.3 Temporal Patterns
@@ -609,6 +1304,136 @@ The vessel-characteristics model explains the smallest share of variation among 
 ### 8.1 Overall Model Fit
 
 The final combined associative model explains a substantial share of stop-level delay variation (R² = 0.7295), clearly outperforming any single domain-specific model. This indicates that the five explanatory domains are complementary rather than interchangeable. While operational propagation provides the strongest single source of explanatory power, the full associative model benefits from combining structural, environmental, temporal, operational, and vessel-related information within one specification.
+
+```{r}
+# --- Standardized coefficient strength for Domain B / C / E ---
+
+combined_model_df <- prepare_model_df(
+  df_model,
+  outcome_cont,
+  final_predictors_trimmed
+)
+
+combined_formula <- as.formula(
+  paste(outcome_cont, "~", paste(final_predictors_trimmed, collapse = " + "))
+)
+
+# Build dummy-expanded model matrix
+x_mat <- model.matrix(combined_formula, data = combined_model_df)
+
+# Remove intercept
+x_mat <- x_mat[, colnames(x_mat) != "(Intercept)", drop = FALSE]
+
+# Remove zero-variance columns
+x_sd <- apply(x_mat, 2, sd, na.rm = TRUE)
+x_mat <- x_mat[, is.finite(x_sd) & x_sd > 0, drop = FALSE]
+
+# Standardize all predictors and outcome
+x_scaled <- scale(x_mat)
+y_scaled <- as.numeric(scale(combined_model_df[[outcome_cont]]))
+
+# Fit standardized model
+std_lm_df <- as.data.frame(x_scaled, check.names = FALSE)
+std_lm_df$.y_scaled <- y_scaled
+
+combined_std_fit <- lm(.y_scaled ~ ., data = std_lm_df)
+
+coef_bce_standardized <- broom::tidy(combined_std_fit) %>%
+  filter(term != "(Intercept)") %>%
+  rowwise() %>%
+  mutate(variable = get_base_var(term, bce_predictors)) %>%
+  ungroup() %>%
+  filter(!is.na(variable)) %>%
+  left_join(domain_lookup_bce, by = "variable") %>%
+  mutate(
+    feature_label = if_else(
+      variable %in% names(label_lookup),
+      unname(label_lookup[variable]),
+      variable
+    ),
+    feature_label = case_when(
+      variable %in% c("schedule_daytype", "schedule_season") ~
+        str_replace(term, variable, paste0(feature_label, " ")),
+      TRUE ~ feature_label
+    ),
+    standardized_strength = abs(estimate),
+    abs_statistic = abs(statistic)
+  ) %>%
+  arrange(desc(standardized_strength)) %>%
+  select(
+    domain,
+    feature_label,
+    term,
+    standardized_strength,
+    std.error,
+    abs_statistic,
+    p.value
+  )
+
+coef_bce_standardized %>%
+  mutate(
+    standardized_strength = round(standardized_strength, 4),
+    std.error = round(std.error, 4),
+    abs_statistic = round(abs_statistic, 2),
+    p.value = round(p.value, 4)
+  ) %>%
+  kable(caption = "Standardized Coefficient Strength for Domain B / C / E Features")
+```
+```{r}
+# --- Standardized coefficient strength bar chart ---
+
+coef_strength_plot_df <- coef_bce_standardized %>%
+  mutate(
+    plot_label = case_when(
+      feature_label == "Schedule day type WEEKEND" ~ "Weekend service",
+      feature_label == "Previous scheduled hour" ~ "Scheduled hour",
+      TRUE ~ feature_label
+    ),
+    domain_clean = case_when(
+      domain == "Domain B: Environmental Conditions" ~ "Environmental Conditions",
+      domain == "Domain C: Temporal Patterns" ~ "Temporal Patterns",
+      domain == "Domain E: Demand and Vessel Context" ~ "Demand and Vessel Context",
+      TRUE ~ domain
+    )
+  ) %>%
+  slice_max(standardized_strength, n = 12, with_ties = FALSE) %>%
+  arrange(standardized_strength)
+
+ggplot(
+  coef_strength_plot_df,
+  aes(
+    x = reorder(plot_label, standardized_strength),
+    y = standardized_strength,
+    fill = domain_clean
+  )
+) +
+  geom_col(width = 0.5) +
+  coord_flip() +
+  scale_fill_manual(
+    values = c(
+      "Environmental Conditions" = "#1A9988",
+      "Temporal Patterns" = "#C7C7C7",
+      "Demand and Vessel Context" = "#EB5600"
+    )
+  ) +
+  labs(
+    title = "Standardized Signal Strength Across Monitorable Features",
+    x = NULL,
+    y = "Standardized coefficient strength",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    legend.key.size = unit(0.45, "cm"),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_text(size = 11)
+  )
+```
+
 
 ### 8.2 Relative Importance Across Domains
 
