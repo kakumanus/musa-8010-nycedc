@@ -39,9 +39,8 @@ This grouped design allows us to compare how different types of factors contribu
 ```{r settings, include=FALSE}
 set.seed(7900)
 
-input_parquet <- "E:/MUSA/8010practicum/outputs/direct_pipeline_final_20260327/baseline_modeling_table_final_direct.parquet"
-output_dir <- "E:/MUSA/8010practicum/outputs/direct_pipeline_final_20260327/associative_baseline_models_20260404"
-dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+input_parquet <- "outputs/direct_pipeline_final_20260327/baseline_modeling_table_final_direct.parquet"
+outcome_cont <- "lateness_vs_original_schedule_min"
 
 outcome_cont <- "lateness_vs_original_schedule_min"
 
