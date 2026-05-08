@@ -1,0 +1,11 @@
+feature,importance,rank,display_label
+env_temperature_c,1115.8426349144647,1,Temperature
+env_battery_water_level_obs,1069.2948022558346,2,Battery water level
+env_narrows_current_obs,1043.4673477643182,3,Narrows current
+boardings_lag_7d,835.8599721524761,4,7-day lag boardings
+segment_hourly_vessel_count_all,805.9068347818056,5,Segment hourly vessel count
+curr_vessel_count_lag_7d,786.3425281613846,6,7-day lag current-stop vessel count
+prev_vessel_count_lag_7d,760.5738811247531,7,7-day lag previous-stop vessel count
+alightings_lag_7d,736.4508325099613,8,7-day lag alightings
+expected_water_min,694.3638855772697,9,Expected water time
+env_wind_speed_mps,660.8627982729596,10,Wind speed
