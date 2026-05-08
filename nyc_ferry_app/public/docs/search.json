@@ -4,7 +4,7 @@
     "href": "nyc_ferry_technical_report/technical-report.html",
     "title": "Analyzing and Predicting Delays for the NYC Ferry System",
     "section": "",
-    "text": "Launch our Application ↗\nGo to the MUSA Practicum Page ↗\nCode\n# Set options\noptions(scipen = 999, dplyr.summarise.inform = FALSE)\n\n# Packages\nif(!require(pacman)){install.packages(\"pacman\"); library(pacman, quietly = T)}\np_load(tidyverse, sf, viridis, lubridate, kableExtra, gridExtra, ggthemes, ggspatial, leaflet, spatstat, spdep, htmlwidgets, concaveman, patchwork, yardstick, arrow, broom, car, scales)"
+    "text": "Launch our Application\nGo to the MUSA Practicum Page\nCode\n# Set options\noptions(scipen = 999, dplyr.summarise.inform = FALSE)\n\n# Packages\nif(!require(pacman)){install.packages(\"pacman\"); library(pacman, quietly = T)}\np_load(tidyverse, sf, viridis, lubridate, kableExtra, gridExtra, ggthemes, ggspatial, leaflet, spatstat, spdep, htmlwidgets, concaveman, patchwork, yardstick, arrow, broom, car, scales)"
   },
   {
     "objectID": "nyc_ferry_technical_report/technical-report.html#ridership-data",

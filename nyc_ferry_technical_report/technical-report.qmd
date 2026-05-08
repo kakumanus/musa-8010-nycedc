@@ -6,14 +6,15 @@ format:
   html:
     number-sections: true
     code-fold: true
+    favicon: ../nycferry-musa.svg
 execute:
   cache: true
 ---
 
 ::: {.d-flex .gap-2 .mb-4}
-[Launch our Application ↗](https://sujankakumanu.com/musa-8010-nycedc/){.btn .btn-primary .btn-sm target="_blank"}
+[Launch our Application](https://sujankakumanu.com/musa-8010-nycedc/){.btn .btn-primary .btn-sm target="_blank"}
 
-[Go to the MUSA Practicum Page ↗](https://pennmusa.github.io/MUSA_801.io/){.btn .btn-primary .btn-sm target="_blank"}
+[Go to the MUSA Practicum Page](https://pennmusa.github.io/MUSA_801.io/){.btn .btn-primary .btn-sm target="_blank"}
 :::
 
 ```{r setup}
