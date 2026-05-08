@@ -6,17 +6,19 @@ format:
   html:
     number-sections: true
     code-fold: true
+execute:
+  cache: true
 ---
 ```{r setup}
 #| message: false
 #| warning: false
 
 # Set options
-options(scipen = 999)
+options(scipen = 999, dplyr.summarise.inform = FALSE)
 
 # Packages
 if(!require(pacman)){install.packages("pacman"); library(pacman, quietly = T)}
-p_load(tidyverse, sf, viridis, lubridate)
+p_load(tidyverse, sf, viridis, lubridate, kableExtra, gridExtra, ggthemes, ggspatial, leaflet, spatstat, spdep, htmlwidgets, concaveman, patchwork, yardstick, arrow, broom, car, scales)
 ```
 
 # Use Case
@@ -25,10 +27,8 @@ p_load(tidyverse, sf, viridis, lubridate)
 
 # Exploratory Data Analysis
 
-## Ridership Data
+## Ridership and Trip Data
 
-
-## Trip Data
 
 
 ## Automatic Identification System (AIS) Data
@@ -384,21 +384,1697 @@ ggplot() +
 ```
 
 ## Swiftly
+**By: Tyler Maynard**
+
+### Background
+
+The Swiftly GPS dataset contains location data every 10-60 seconds from the NYC Ferry AVL system. Columns include vessel, route, trip, block, and coordinates. This will be especially useful in calculating the speed of the vehicle at various points in time, helping identify locations, routes, and trips where the system struggles with on-time performance.
+
+**Reference Week: June 16-22, 2025**
+
+For the sake of processing power, we selected a "sample week" to conduct EDA for Swiftly GPS and AIS data. Based on conversations with NYCEDC, ridership is much higher in the summer months, especially on weekends. Thus, we chose a week during the summer, also including a holiday to evaluate any unique characteristics (if any) during special service days.
+
+```{r swiftly-special-service}
+#| warning: false
+#| message: false
+
+special_service <- data.frame(
+  dates = as.Date(c("2025-06-19")))
+```
+
+### Data Import
+
+The Swiftly GPS data set is available by month in CSV files. The following chunk reads the June 2025 CSV file, filters to the dates included in the sample week, and parses out each record's date and time into separate columns.
+
+```{r swiftly-data-import}
+#| warning: false
+#| message: false
+
+# Original csv
+jun2025_original <- read.csv("../exploratory_code/swiftly_eda/swiftly_gps.2025_06.csv")
+
+# Removing extra 'data.' from column names, removing unneeded columns
+jun2025 <- jun2025_original %>%
+  rename_with(~ gsub("data.", "", .x)) %>%
+  select(-(1:3), -(7))
+
+# Converting to datetime
+jun2025$time <- ymd_hms(jun2025$time)
+jun2025$timeProcessed <- ymd_hms(jun2025$timeProcessed)
+
+# Seeing how many unique values each column has
+jun2025 %>%
+  summarise(across(everything(), n_distinct)) %>%
+  pivot_longer(cols = everything()) %>%
+  kable()
+
+# Parse dates and times
+jun2025 <- jun2025 %>%
+  mutate(
+    date_time = ymd_hms(time, tz = "America/New_York"),
+    processed_date_time = ymd_hms(timeProcessed, tz = "America/New_York"),
+
+    date = as.Date(date_time),
+    time = format(date_time, "%H:%M:%S"),
+    hour = substr(time,1,2),
+
+    dateProcessed = as.Date(processed_date_time),
+    timeProcessed = format(processed_date_time, "%H:%M:%S"),
+
+    dayOfWeek = if_else(wday(date, week_start = 1) %in% c(6,7), "Weekend", "Weekday"),
+    dayOfWeek = case_when(
+      date %in% special_service$dates ~ "Holiday",
+      TRUE ~ dayOfWeek)) %>%
+  select(date, time, dateProcessed, timeProcessed, dayOfWeek, headsign, tripShortName, everything(), date_time, processed_date_time)
+
+jun2025_reference_week <- jun2025 %>%
+  filter(date %in% c("2025-06-16","2025-06-17","2025-06-18","2025-06-19","2025-06-20","2025-06-21","2025-06-22")) %>%
+  filter(!is.na(tripId)) %>%
+  arrange(vehicleId, date_time)
+str(jun2025_reference_week$time)
+```
+
+### Shapefiles
+
+As a way to add more spatial context to this analysis, the landings, routes, hydrology, and boroughs were extracted from the NYC Ferry and NYC OpenData websites. The hydrology object was trimmed to only include hydrology contained within the bounding box created around the study area.
+
+```{r swiftly-sf-objects}
+#| warning: false
+#| message: false
+
+landings <- read_sf("../exploratory_code/swiftly_eda/Shapefiles/Landings/landings.shp") %>%
+  st_transform(32118)
+
+landings_east_river <- landings %>%
+  filter(!stop_id %in% c("37","39","43","45","46","48","49","50",
+    "51","52","55","56","57","58","61","62",
+    "16","88","103","104","105","142",
+    "145","149","150","151")) %>%
+  st_transform(32118)
+
+routes <- read_sf("../exploratory_code/swiftly_eda/Shapefiles/Routes/routes.shp") %>%
+  group_by(route_id) %>%
+  summarise() %>%
+  st_transform(32118)
+
+boroughs <- read_sf("../exploratory_code/swiftly_eda/Shapefiles/Boroughs/boroughs.shp") %>%
+  st_transform(32118)
+
+bbox_east_river <- st_bbox(landings_east_river)
+bbox_expanded_east_river <- bbox_east_river
+bbox_expanded_east_river["xmin"] <- bbox_east_river["xmin"] - 15000
+bbox_expanded_east_river["ymin"] <- bbox_east_river["ymin"] - 15000
+bbox_expanded_east_river["xmax"] <- bbox_east_river["xmax"] + 15000
+bbox_expanded_east_river["ymax"] <- bbox_east_river["ymax"] + 15000
+bbox_poly_east_river <- st_as_sfc(bbox_expanded_east_river)
+
+water <- read_sf("../exploratory_code/swiftly_eda/Shapefiles/Hydrology/WBDHU2.shp") %>%
+  st_transform(32118) %>%
+  summarise(geometry = st_union(geometry)) %>%
+  st_intersection(st_transform(st_as_sfc(st_bbox(bbox_expanded_east_river)), 32118))
+```
+
+```{r swiftly-bounding-boxes}
+#| warning: false
+#| message: false
+
+bbox <- st_bbox(c(
+  xmin = -74.30603027343751,
+  ymin = 40.492915026895815,
+  xmax = -73.64959716796876,
+  ymax = 40.919739051062216
+), crs = 4326)
+
+bbox_area <- st_as_sfc(bbox) %>%
+  st_transform(32118)
+
+bbox_service_area <- boroughs %>%
+  st_transform(32118) %>%
+  st_bbox()
+```
+
+### Data Cleaning
+
+The following chunk creates sf objects for each data point and computes new fields for feature engineering. Features created include:
+
+- **Knots**: based on the time and distance of the previous node of the same trip.
+- **Key identifiers**: for different analyses, generally including date, trip, and route.
+- **OTP**: classifies on-time performance at each node based on the schedule adherence column (`schedAdhMsec`).
+- **Excessively Late**: a binary field indicating whether a record is more than 10 minutes past the expected time.
+- **First Record Late**: indicates if the trip starts five minutes past its scheduled time.
+- **OTP Transition**: identifies trips where the OTP changes from one status to another (e.g., on-time to late).
+
+Of the 851,238 data points within this sample week, 25,558 were identified as excessively late — approximately three percent of all records.
+
+```{r swiftly-cleaning}
+#| warning: false
+#| message: false
+
+pts <- st_as_sf(jun2025_reference_week, coords = c("lon", "lat"), crs = 4326, remove = FALSE) %>%
+  st_transform(32118)
+
+xy <- st_coordinates(pts)
+
+stopifnot(nrow(jun2025_reference_week) == nrow(xy))
+
+jun2025_reference_week <- jun2025_reference_week %>%
+  mutate(x = xy[, 1], y = xy[, 2]) %>%
+  group_by(date, blockId, routeId, tripId, directionId, dayOfWeek) %>%
+  arrange(date_time, .by_group = TRUE) %>%
+  mutate(
+    directionId = case_when(
+      directionId == 1 ~ "NB",
+      TRUE ~ "SB"
+    ),
+    isFirst = row_number() == 1,
+    isSecond = row_number() == 2,
+    dist_to_prev_m = round(sqrt((x - lag(x))^2 + (y - lag(y))^2), 2),
+    time_diff_sec  = as.numeric(difftime(date_time, lag(date_time), units = "secs")),
+    m_per_sec      = if_else(is.na(time_diff_sec) | time_diff_sec <= 0,
+                             0,
+                             round(dist_to_prev_m / time_diff_sec, 2)),
+    knots = m_per_sec * 1.94384,
+    date_route_trip_direction_vehicle_dow = paste(date, routeId, tripId, directionId, vehicleId, dayOfWeek, sep = " "),
+    key_identifier = paste(date, blockId, routeId, tripId, directionId, dayOfWeek, sep = " "),
+    dailyTrip = paste(dayOfWeek, routeId, tripId, sep = " "),
+    countDailyTrip = n(),
+    OTP = case_when(
+      schedAdhMsec < -60000 ~ "Early",
+      schedAdhMsec > 600000 ~ "Excessively Late",
+      schedAdhMsec > 300000 ~ "Late",
+      TRUE ~ "Ontime"
+    ),
+    excessivelyLate = case_when(
+      OTP == "Excessively Late" ~ 1,
+      TRUE ~ 0
+    ),
+    timeOfDay = as.integer(hour(date_time)),
+    firstRecordLate = if_else(isSecond == 1 & (OTP == "Late" | OTP == "Excessively Late"), "Yes", "No"),
+    OTP_prev = lag(OTP),
+    OTP_changed = coalesce(OTP != OTP_prev, FALSE),
+    OTP_transition = case_when(
+      isFirst ~ "Start",
+      is.na(OTP_prev) ~ "Start",
+      OTP == OTP_prev ~ "No Change",
+      TRUE ~ paste0(OTP_prev, " -> ", OTP)
+    )
+  ) %>%
+  ungroup() %>%
+  select(-x, -y, -m_per_sec) %>%
+  select(dailyTrip, key_identifier, date_route_trip_direction_vehicle_dow, date, time, dateProcessed, timeProcessed, OTP, OTP_transition, excessivelyLate, timeOfDay, schedAdh, dayOfWeek,
+         dist_to_prev_m, time_diff_sec, knots, headsign, tripShortName,
+         everything(), date_time, processed_date_time)
+
+summary_table <- data.frame(
+  Statistic = names(summary(jun2025_reference_week$knots)),
+  Value     = as.numeric(summary(jun2025_reference_week$knots)),
+  row.names = NULL
+)
+
+jun2025_reference_week_sf <- st_as_sf(jun2025_reference_week, coords = c("lon", "lat"), crs = 4326, remove = FALSE) %>%
+  st_transform(32118)
+
+kable(summary_table, digits = 2, caption = "Summary of Knots") %>%
+  kable_styling(
+    bootstrap_options = c("striped", "hover"),
+    full_width = FALSE
+  ) %>%
+  column_spec(1:2, width = "150px")
+
+jun2025_reference_week %>%
+  count(excessivelyLate, sort = TRUE)
+
+jun2025_reference_week_excessively_lates <- jun2025_reference_week %>%
+  filter(OTP == "Excessively Late")
+
+jun2025_reference_week_excessively_lates_sf <- st_as_sf(jun2025_reference_week_excessively_lates, coords = c("lon", "lat"), crs = 4326, remove = FALSE) %>%
+  st_transform(32118)
+
+hull <- concaveman(jun2025_reference_week_excessively_lates_sf)
+bbox_hull <- st_bbox(hull)
+
+ggplot() +
+  geom_sf(data = boroughs, color = "white") +
+  geom_sf(data = hull, color = "red", fill = NA, size = 3) +
+  coord_sf(
+    xlim = c(bbox_east_river["xmin"] - 10000, bbox_east_river["xmax"] + 10000),
+    ylim = c(bbox_east_river["ymin"] - 10000, bbox_east_river["ymax"] + 10000),
+    expand = FALSE
+  ) +
+  labs(title = "Excessively Late 'Zone' - Concave Polygon") +
+  theme_solid() +
+  theme(
+    plot.title = element_text(size = 20),
+    plot.title.position = "plot"
+  )
+
+jun2025_reference_week %>%
+  count(routeId)
+```
+
+### OTP by Direction
+
+This chunk computes on-time performance by direction (NB or SB), filtering to excessively late records. Northbound and southbound trips comprise roughly the same share of all trips; however, the higher number of excessively late southbound data points could be indicative of other issues.
+
+```{r swiftly-otp-direction}
+#| warning: false
+#| message: false
+
+jun2025_reference_week_dir <- jun2025_reference_week %>%
+  select(dailyTrip, directionId, OTP, routeId) %>%
+  filter(OTP == "Excessively Late")
+
+jun2025_reference_week_dir %>%
+  count(directionId)
+
+jun2025_reference_week_dir %>%
+  count(directionId, routeId)
+```
+
+### Bar Charts
+
+The bar charts below visualize key engineered features. The first chart shows the distribution of excessively late trips by the time spent excessively late (as a percentage of total data points per trip).
+
+Three key takeaways from the second plot:
+
+1. Even though weekdays account for the majority of data points, they account for under half of excessively late data points. Weekend service is the only category where excessively late counts surpass non-excessively late counts.
+2. Nearly 80 percent of excessively late data points are attributed to the East River and Rockaway routes.
+3. The PM peak period (approximately 1pm to 10pm) accounts for the overwhelming majority of problematic data points.
+
+```{r swiftly-bar-charts}
+#| warning: false
+#| message: false
+
+excessivelyLatePlotVariables <-
+  jun2025_reference_week %>%
+  as.data.frame() %>%
+  select(excessivelyLate, dayOfWeek, routeId, timeOfDay, blockId, directionId, firstRecordLate) %>%
+  gather(variable, value, -excessivelyLate) %>%
+  filter(!is.na(value))
+
+jun2025_reference_week_wide <- jun2025_reference_week %>%
+  count(key_identifier, OTP) %>%
+  pivot_wider(
+    names_from = OTP,
+    values_from = n,
+    values_fill = 0
+  ) %>%
+  mutate(Total = rowSums(across(-key_identifier)))
+
+jun2025_reference_week_wide
+
+jun2025_reference_week_percents <- jun2025_reference_week_wide %>%
+  mutate(round(across(-c(key_identifier, Total), ~ . / Total * 100), 2)) %>%
+  pivot_longer(
+    cols = -c(key_identifier, Total),
+    names_to = "OTP",
+    values_to = "Percent"
+  ) %>%
+  filter(OTP == "Excessively Late", Percent > 0) %>%
+  mutate(Percent_Rounded = round(Percent, 0))
+
+mean_val <- mean(jun2025_reference_week_percents$Percent_Rounded)
+median_val <- median(jun2025_reference_week_percents$Percent_Rounded)
+
+ggplot() +
+  geom_histogram(data = jun2025_reference_week_percents, color = "white", fill = "#006bb6", linewidth = 0.3, aes(x = Percent_Rounded), binwidth = 10) +
+  geom_vline(xintercept = mean_val, color = "red2", linetype = "dashed", linewidth = 1) +
+  geom_vline(xintercept = median_val, color = "darkgreen", linetype = "dashed", linewidth = 1) +
+  annotate("text", x = mean_val, y = 15, label = "Mean", color = "red2", angle = 90, vjust = -0.5) +
+  annotate("text", x = median_val, y = 15, label = "Median", color = "darkgreen", angle = 90, vjust = -0.5) +
+  labs(
+    title = "Distribution of Excessively Late Trips by Time Spent Excessively Late",
+    x = "Percent",
+    y = "Count"
+  ) +
+  theme_excel_new() +
+  theme(
+    axis.title = element_text(size = 14),
+    plot.title = element_text(size = 20),
+    plot.subtitle = element_text(size = 16),
+    plot.title.position = "plot"
+  )
+
+plot_df <- excessivelyLatePlotVariables %>%
+  group_by(excessivelyLate, variable, value) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(excessivelyLate, variable) %>%
+  mutate(prop = count / sum(count)) %>%
+  ungroup()
+
+ggplot(plot_df, aes(x = ifelse(variable == "timeOfDay", as.numeric(value), value),
+                    y = prop, fill = as.factor(excessivelyLate))) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ variable, scales = "free_x") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("0" = "limegreen", "1" = "darkred"),
+                    labels = c("Not Excessively Late", "Excessively Late"),
+                    name = "") +
+  labs(x = NULL, y = "Percent within group") +
+  theme_excel_new()
+```
+
+```{r swiftly-bar-chart-by-route}
+#| warning: false
+#| message: false
+
+jun2025_reference_week <- jun2025_reference_week %>%
+  mutate(day_route = paste(dayOfWeek, routeId, sep = " "))
+
+speed_by_route <- jun2025_reference_week %>%
+  group_by(day_route, dayOfWeek, routeId) %>%
+  summarise(
+    avgKnots = mean(knots, na.rm = TRUE),
+    medKnots = median(knots, na.rm = TRUE),
+    n = dplyr::n(),
+    .groups = "drop"
+  )
+
+ggplot() +
+  geom_col(data = speed_by_route, aes(x = day_route, y = avgKnots, fill = dayOfWeek)) +
+  labs(
+    title = "Average Speed by Route and Service Level",
+    x = "Service Level",
+    y = "Average Knots"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Holiday" = "limegreen",
+      "Weekday" = "#006bb6",
+      "Weekend" = "darkred"
+    )
+  ) +
+  theme_excel_new() +
+  theme(
+    plot.title = element_text(size = 20),
+    plot.subtitle = element_text(size = 16),
+    plot.title.position = "plot",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+### Landings Map
+
+```{r swiftly-landings-map}
+#| warning: false
+#| message: false
+
+ggplot() +
+  geom_sf(data = boroughs, color = "white") +
+  geom_sf(data = landings, color = "black", size = 3) +
+  labs(title = "NYC Ferry Landings") +
+  theme_solid() +
+  theme(
+    plot.title = element_text(size = 16),
+    plot.title.position = "plot"
+  )
+```
+
+### Fishnet and Kernel Density
+
+Since these datasets contain thousands of points per day, aggregation is the most efficient way to process and observe the data. A fishnet was created using a grid cell side of 250 meters. The figure represents the data for the sample week, excluding any grid cell with a density of 0.
+
+```{r swiftly-fishnet}
+#| dev: "ragg_png"
+#| dpi: 300
+#| warning: false
+#| message: false
+
+fishnet_swiftly <-
+  st_make_grid(water, cellsize = 250) %>%
+  st_sf() %>%
+  mutate(uniqueID = rownames(.))
+
+jun2025_net <- st_join(
+  fishnet_swiftly, jun2025_reference_week_excessively_lates_sf, join = st_intersects) %>%
+  group_by(uniqueID) %>%
+  summarise(mean_speed = mean(knots, na.rm = TRUE),
+            n = n(), .groups = "drop") %>%
+  filter(!is.na(mean_speed))
+
+jun2025_ppp <- as.ppp(st_coordinates(jun2025_reference_week_excessively_lates_sf), W = st_bbox(jun2025_net))
+jun2025_KD <- density.ppp(jun2025_ppp, sigma = 1000)
+
+as.data.frame(jun2025_KD) %>%
+  st_as_sf(coords = c("x", "y"), crs = st_crs(jun2025_net)) %>%
+  aggregate(., jun2025_net, mean) %>%
+  ggplot() +
+    geom_sf(aes(fill = value), color = NA, linewidth = 0) +
+    geom_sf(data = landings, color = "black", size = 1, alpha = 0.5) +
+    scale_fill_viridis(name = "Density") +
+    labs(title = "Kernel Density of Excessively Late Data Points, 6/16/25 to 6/22/25") +
+    theme_solid() +
+    theme(
+      plot.title = element_text(size = 16),
+      plot.title.position = "plot"
+    )
+```
+
+### Mean Speed
+
+The following figure shows the average speed of each data point in knots per grid cell, regardless of on-time performance designation.
+
+```{r swiftly-mean-speed}
+#| warning: false
+#| message: false
+
+ggplot(jun2025_net) +
+  geom_sf(data = boroughs, color = "white") +
+  geom_sf(data = landings, color = "black", size = 2, alpha = 0.5) +
+  geom_sf(aes(fill = mean_speed), color = NA) +
+  coord_sf(
+    xlim = c(bbox_hull["xmin"] - 100, bbox_hull["xmax"] + 100),
+    ylim = c(bbox_hull["ymin"] - 200, bbox_hull["ymax"] + 200),
+    expand = FALSE
+  ) +
+  scale_fill_viridis_c(option = "D", name = "Knots") +
+  labs(title = "Mean Vessel Speed by Cell") +
+  theme_solid() +
+  theme(
+    plot.title = element_text(size = 16),
+    plot.title.position = "plot"
+  )
+```
+
+### Kernel Density Plots — Hourly
+
+To analyze how OTP changes spatially throughout the PM peak, kernel densities of excessively late data points were mapped for each hour between 1pm and 10pm.
+
+```{r swiftly-kds}
+#| dev: "ragg_png"
+#| dpi: 300
+#| warning: false
+#| message: false
+
+make_hourly_kd <- function(hour_val) {
+  net <- st_join(fishnet_swiftly, jun2025_reference_week_excessively_lates_sf, join = st_intersects) %>%
+    group_by(uniqueID) %>%
+    filter(hour == hour_val) %>%
+    summarise(mean_speed = mean(knots, na.rm = TRUE), n = n(), .groups = "drop")
+  kd <- density.ppp(as.ppp(st_coordinates(net), W = st_bbox(jun2025_net)), sigma = 1000)
+  kd
+}
+
+kd_list <- list(
+  '1PM'  = make_hourly_kd("13"),
+  '2PM'  = make_hourly_kd("14"),
+  '3PM'  = make_hourly_kd("15"),
+  '4PM'  = make_hourly_kd("16"),
+  '5PM'  = make_hourly_kd("17"),
+  '6PM'  = make_hourly_kd("18"),
+  '7PM'  = make_hourly_kd("19"),
+  '8PM'  = make_hourly_kd("20"),
+  '9PM'  = make_hourly_kd("21"),
+  '10PM' = make_hourly_kd("22")
+)
+
+all_values <- unlist(lapply(kd_list, \(kd) as.data.frame(kd)$value))
+global_limits <- range(all_values, na.rm = TRUE)
+
+plots <- imap(kd_list, ~{
+  sf_pts <- st_as_sf(as.data.frame(.x), coords = c("x", "y"), crs = st_crs(jun2025_net))
+  agg <- aggregate(sf_pts["value"], jun2025_net, mean, na.rm = TRUE)
+
+  ggplot() +
+    geom_sf(data = boroughs, color = "white") +
+    geom_sf(data = agg, aes(fill = value), color = NA, linewidth = 0) +
+    coord_sf(
+      xlim = c(bbox_hull["xmin"] - 100, bbox_hull["xmax"] + 100),
+      ylim = c(bbox_hull["ymin"] - 100, bbox_hull["ymax"] + 100),
+      expand = FALSE
+    ) +
+    scale_fill_viridis_c(name = "Kernel Density", limits = global_limits, oob = scales::squish) +
+    labs(title = paste("KD -", .y)) +
+    theme_solid() +
+    theme(
+      plot.title = element_text(size = 12),
+      plot.title.position = "plot"
+    )
+})
+
+wrap_plots(plots, ncol = 5) +
+  plot_layout(guides = "collect") +
+  plot_annotation(
+    title = "Excessively Late Across TOD",
+    caption = "Unified KD Scale, 250m Grid Cell Size"
+  ) &
+  theme(
+    legend.position = "right",
+    legend.box = "horizontal",
+    plot.margin = margin(1, 1, 1, 1)
+  )
+```
+
+One potentially useful consideration is to observe locations where trips change OTP status. The following figure includes only instances where OTP status changes to either late or excessively late.
+
+```{r swiftly-otp-transitions}
+#| warning: false
+#| message: false
+
+jun2025_reference_week_late_sf <- jun2025_reference_week_sf %>%
+  filter(OTP_transition %in% c("Early -> Late", "Late -> Excessively Late",
+                                "Ontime -> Late", "Ontime -> Excessively Late"))
+
+ggplot() +
+  geom_sf(data = boroughs, color = "white") +
+  geom_sf(data = landings, color = "black", size = 2, alpha = 0.2) +
+  geom_sf(data = jun2025_reference_week_late_sf,
+          aes(color = OTP_transition), size = 2, alpha = 0.2) +
+  coord_sf(
+    xlim = c(bbox_east_river["xmin"] - 10000, bbox_east_river["xmax"] + 10000),
+    ylim = c(bbox_east_river["ymin"] - 10000, bbox_east_river["ymax"] + 10000),
+    expand = FALSE
+  ) +
+  labs(title = "OTP Transition Locations") +
+  scale_color_manual(
+    name = "Transition Type",
+    values = c(
+      "Early -> Late"               = "#1e3888",
+      "Ontime -> Late"              = "#47a8bd",
+      "Ontime -> Excessively Late"  = "#ffad69",
+      "Late -> Excessively Late"    = "#9c3848"
+    ),
+    labels = c(
+      "Early -> Late"               = "Early to Late",
+      "Ontime -> Late"              = "Ontime to Late",
+      "Ontime -> Excessively Late"  = "Ontime to Excessively Late",
+      "Late -> Excessively Late"    = "Late to Excessively Late"
+    )
+  ) +
+  facet_wrap(~OTP_transition) +
+  theme_solid() +
+  theme(
+    plot.title = element_text(size = 20),
+    plot.title.position = "plot"
+  )
+```
+
+### Leaflet Distribution
+
+```{r swiftly-leaflet}
+#| warning: false
+#| message: false
+#| eval: false
+
+landings_buffers_100ft <- st_buffer(landings, dist = 30.48)
+counts <- lengths(st_intersects(landings_buffers_100ft, jun2025_reference_week_excessively_lates_sf))
+landings_buffers_100ft$record_count <- counts
+
+points_plot  <- st_transform(landings, 4326)
+buffers_plot <- st_transform(landings_buffers_100ft, 4326)
+routes_plot  <- st_transform(routes, 4326)
+boroughs_plot <- st_transform(boroughs, 4326)
+
+jun2025_reference_week_elate_sf <- jun2025_reference_week_sf %>%
+  filter(OTP == "Excessively Late") %>%
+  st_transform(4326)
+
+jun2025_reference_week_not_elate_sf <- jun2025_reference_week_sf %>%
+  filter(OTP != "Excessively Late") %>%
+  st_transform(4326)
+
+leaflet() %>%
+  addProviderTiles("Esri.WorldImagery", group = "Imagery",
+                   options = tileOptions(opacity = 0.6)) %>%
+  addPolygons(data = boroughs_plot, color = "#828282", weight = 1, fillOpacity = 0.75, group = "Boroughs") %>%
+  addPolylines(data = routes_plot, color = "#006bb6", weight = 2, opacity = 0.2, group = "Routes") %>%
+  addPolygons(data = buffers_plot, color = "#f58426", weight = 10, fillOpacity = 0.75, group = "Landings",
+              label = ~paste0("Records: ", record_count)) %>%
+  addCircleMarkers(data = points_plot, radius = 3, color = "#f58426", opacity = 0.6, group = "Landings") %>%
+  addCircleMarkers(data = jun2025_reference_week_elate_sf, radius = 0.5, color = "#47a8bd",
+    opacity = 0.6, fillOpacity = 0.4, group = "Excessively Late",
+    label = ~paste0("Speed: ", round(knots, 2)),
+    popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " knots",
+                    "<br><b>Route:</b> ", routeId,
+                    "<br><b>Trip:</b> ", tripId,
+                    "<br><b>Vessel:</b> ", vehicleId,
+                    "<br><b>Time:</b> ", time)) %>%
+  addCircleMarkers(data = jun2025_reference_week_not_elate_sf, radius = 0.5, color = "#9c3848",
+    opacity = 0.6, fillOpacity = 0.4, group = "Not Excessively Late",
+    label = ~paste0("Speed: ", round(knots, 2)),
+    popup = ~paste0("<b>Speed:</b> ", round(knots, 2), " knots",
+                    "<br><b>Route:</b> ", routeId,
+                    "<br><b>Trip:</b> ", tripId,
+                    "<br><b>Vessel:</b> ", vehicleId,
+                    "<br><b>Time:</b> ", time)) %>%
+  addLayersControl(
+    overlayGroups = c("Boroughs", "Routes", "Landings", "Excessively Late", "Not Excessively Late"),
+    baseGroups = c("Imagery"),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+```
+
+This Leaflet map shows the data with an imagery layer for context. For the sake of processing power, the results are not shown by default — remove the `eval: false` chunk option to render it.
 
 
 
 # Modeling
 
-## Feature Creation
-
-
 ## Associative Model
+**By: Yiming 'Ming' Cao**
 
+### Objective and Design
+
+This section presents an associative model for explaining stop-level arrival lateness in the NYC Ferry system. The goal is interpretation rather than advance prediction. Instead of asking only whether a future trip will be delayed, this model asks which historical factors are associated with observed delay patterns.
+
+The unit of analysis is a stop-level observation. The dependent variable is arrival lateness in minutes relative to the original schedule. Predictors are organized into five explanatory domains: structural context, environmental conditions, temporal patterns, operational propagation, and vessel characteristics.
+
+This grouped design allows us to compare how different types of factors contribute to delay variation while keeping the final model interpretable for operational use.
+
+```{r ming-settings}
+#| message: false
+#| warning: false
+
+set.seed(7900)
+
+input_parquet <- "../exploratory_code/modeling/associative/baseline_modeling_table_final_direct.parquet"
+outcome_cont  <- "lateness_vs_original_schedule_min"
+
+week_window_days <- 3
+
+candidate_predictors <- c(
+  "route_id", "direction", "stop_sequence", "prev_stop_sched_hour", "prev_stop_sched_hour_group",
+  "schedule_season", "schedule_daytype", "vessel_trip_seq_in_chain", "vessel_capacity",
+  "is_terminal_stop", "prev_stop_shared_stop_flag", "curr_stop_shared_stop_flag",
+  "planned_turnaround_gap_min", "scheduled_headway_min", "expected_water_min",
+  "prev_stop_sequence", "prev_stop_boardings", "prev_stop_alightings", "prev_stop_onboard",
+  "prev_stop_load_factor", "env_temperature_c", "env_wind_speed_mps", "env_visibility_m",
+  "env_precipitation_mm", "env_battery_water_level_anomaly", "env_narrows_current_residual",
+  "env_battery_water_level_obs", "env_narrows_current_obs"
+)
+prior_delay_predictors <- c("inherited_prev_trip_delay", "carried_within_trip_delay")
+```
+
+### Data Scope
+
+The model uses the stop-level baseline modeling table as its input dataset. After loading the data, we confirmed the number of records and the availability of candidate predictors before fitting the associative models.
+
+```{r ming-load}
+#| message: false
+#| warning: false
+
+if (!file.exists(input_parquet)) stop("Missing input parquet: ", input_parquet)
+df_raw <- read_parquet(input_parquet) %>% as_tibble()
+
+df <- df_raw %>%
+  mutate(
+    trip_date = as.Date(substr(as.character(trip_key), 1, 8), format = "%Y%m%d")
+  )
+
+predictors_no_prior   <- intersect(candidate_predictors, names(df))
+predictors_with_prior <- unique(c(predictors_no_prior, intersect(prior_delay_predictors, names(df))))
+
+tibble(
+  input_rows              = nrow(df_raw),
+  rows_after_load         = nrow(df),
+  predictors_no_prior_n   = length(predictors_no_prior),
+  predictors_with_prior_n = length(predictors_with_prior)
+) %>% kable(caption = "Data Scope and Predictor Availability")
+```
+
+### Predictor Domains
+
+To support interpretation, predictors in the associative model were organized into five explanatory domains. This grouped structure separates baseline route and stop context from environmental conditions, temporal patterns, operational propagation, and vessel-related characteristics. The goal is to interpret delay association at the domain level rather than focusing only on isolated individual coefficients.
+
+#### Domain A: Structural Context
+
+The structural domain captures baseline differences in how delay varies across the ferry network. These predictors describe route, stop position, and stop-context features that reflect how service is organized spatially and operationally. Variables in this domain include route and direction identifiers, stop sequence, terminal status, and shared-stop context. We interpret this domain as representing the structural baseline of delay rather than short-term changing conditions.
+
+#### Domain B: Environmental Conditions
+
+The environmental domain captures external natural conditions that may affect vessel movement and docking performance. These predictors include weather and water-related variables such as temperature, wind speed, visibility, precipitation, water-level, and current-related measures. This domain is especially important for the client because it helps distinguish external operating conditions from delay that is simply inherited from earlier parts of the trip.
+
+#### Domain C: Temporal Patterns
+
+The temporal domain captures recurring calendar and time-of-day structure in delay. These predictors describe when service occurs rather than where it occurs or what the vessel has already experienced. Variables in this domain include scheduled hour, scheduled hour group, day type, and season. We use this domain to represent regular service rhythms such as weekday versus weekend patterns, seasonal demand differences, and time-of-day effects.
+
+#### Domain D: Operational Propagation
+
+The operational propagation domain captures delay carried forward through the operating chain. These predictors reflect whether lateness has already accumulated earlier in the trip or in a prior linked trip on the same vessel. Variables in this domain include inherited previous-trip delay and carried within-trip delay. This domain is operationally meaningful, but it is interpreted as one component of the associative model rather than the sole basis for explaining delay.
+
+#### Domain E: Vessel Characteristics
+
+The vessel domain captures systematic differences associated with vessel capacity and operating role. These predictors help assess whether some delay patterns are associated with the characteristics of the vessel being used rather than only with route structure or environmental conditions. Variables in this domain include vessel capacity and related vessel-level operational identifiers retained in the final specification.
+
+### Data Preparation
+
+Before model estimation, the stop-level modeling table was prepared to support a consistent and interpretable associative model. This section summarizes the key preparation steps: variable construction, missing-value treatment for environmental fields, and helper functions used for model fitting and summary extraction.
+
+#### Data Cleaning and Variable Construction
+
+The input table was converted into a stop-level analytic dataset. We created a trip date field from the trip identifier, checked which candidate predictors were available, and retained variables needed for the outcome and domain-based model structure.
+
+#### Environmental Variable Imputation
+
+Missing environmental values were imputed using a local time-slot rolling rule. The primary fill used observations from the same scheduled hour within a centered seven-day window around the trip date. If no value was available, the method fell back to the same scheduled hour group within the same centered window.
+
+This approach keeps environmental predictors in the model without relying only on complete-case filtering. It also keeps the imputed values tied to nearby dates and comparable operating periods.
+
+```{r ming-impute}
+#| message: false
+#| warning: false
+
+build_week_fill_map <- function(day_slot_tbl, group_col, date_col = "trip_date", value_col = "slot_day_median", window_days = 3) {
+  if (nrow(day_slot_tbl) == 0) return(tibble())
+  split_tbl <- split(day_slot_tbl, day_slot_tbl[[group_col]], drop = TRUE)
+  out <- lapply(split_tbl, function(gdf) {
+    gdf <- gdf[order(gdf[[date_col]]), , drop = FALSE]
+    d <- gdf[[date_col]]
+    v <- gdf[[value_col]]
+    week_fill <- vapply(seq_along(v), function(i) {
+      idx <- abs(as.integer(d - d[i])) <= window_days
+      val <- suppressWarnings(median(v[idx], na.rm = TRUE))
+      ifelse(is.finite(val), val, NA_real_)
+    }, numeric(1))
+    gdf$week_fill <- week_fill
+    gdf[, c(group_col, date_col, "week_fill"), drop = FALSE]
+  })
+  bind_rows(out)
+}
+
+impute_by_local_slot_week <- function(data, var_name, window_days = 3) {
+  x <- data
+  miss_before <- sum(is.na(x[[var_name]]))
+  if (miss_before == 0) {
+    return(list(data = x, summary = tibble(variable = var_name, n_missing_before = 0L, n_filled_primary = 0L, n_filled_fallback = 0L, n_missing_after = 0L)))
+  }
+
+  primary_daily <- x %>%
+    filter(!is.na(.data[[var_name]]), !is.na(trip_date), !is.na(prev_stop_sched_hour)) %>%
+    group_by(prev_stop_sched_hour, trip_date) %>%
+    summarise(slot_day_median = median(.data[[var_name]], na.rm = TRUE), .groups = "drop")
+  primary_fill <- build_week_fill_map(primary_daily, group_col = "prev_stop_sched_hour", value_col = "slot_day_median", window_days = window_days) %>%
+    rename(fill_primary = week_fill)
+
+  fallback_daily <- x %>%
+    filter(!is.na(.data[[var_name]]), !is.na(trip_date), !is.na(prev_stop_sched_hour_group)) %>%
+    group_by(prev_stop_sched_hour_group, trip_date) %>%
+    summarise(slot_day_median = median(.data[[var_name]], na.rm = TRUE), .groups = "drop")
+  fallback_fill <- build_week_fill_map(fallback_daily, group_col = "prev_stop_sched_hour_group", value_col = "slot_day_median", window_days = window_days) %>%
+    rename(fill_fallback = week_fill)
+
+  x <- x %>%
+    left_join(primary_fill, by = c("prev_stop_sched_hour", "trip_date")) %>%
+    left_join(fallback_fill, by = c("prev_stop_sched_hour_group", "trip_date"))
+
+  was_missing      <- is.na(x[[var_name]])
+  fill_primary_idx  <- was_missing & !is.na(x$fill_primary)
+  fill_fallback_idx <- was_missing & is.na(x$fill_primary) & !is.na(x$fill_fallback)
+
+  x[[var_name]][fill_primary_idx]  <- x$fill_primary[fill_primary_idx]
+  x[[var_name]][fill_fallback_idx] <- x$fill_fallback[fill_fallback_idx]
+  x <- x %>% select(-fill_primary, -fill_fallback)
+
+  list(
+    data = x,
+    summary = tibble(
+      variable          = var_name,
+      n_missing_before  = miss_before,
+      n_filled_primary  = sum(fill_primary_idx, na.rm = TRUE),
+      n_filled_fallback = sum(fill_fallback_idx, na.rm = TRUE),
+      n_missing_after   = sum(is.na(x[[var_name]]))
+    )
+  )
+}
+
+impute_vars <- intersect(
+  c("env_temperature_c", "env_wind_speed_mps", "env_visibility_m",
+    "env_precipitation_mm", "env_narrows_current_residual",
+    "env_battery_water_level_obs", "env_narrows_current_obs"),
+  names(df)
+)
+
+impute_summary_list <- list()
+df_imp <- df
+for (v in impute_vars) {
+  res <- impute_by_local_slot_week(df_imp, v, window_days = week_window_days)
+  df_imp <- res$data
+  impute_summary_list[[length(impute_summary_list) + 1]] <- res$summary
+}
+imputation_summary <- bind_rows(impute_summary_list)
+```
+
+```{r ming-imputation-summary}
+imputation_summary %>%
+  mutate(
+    pct_missing_before = round(n_missing_before / nrow(df) * 100, 2),
+    pct_missing_after  = round(n_missing_after  / nrow(df_imp) * 100, 2)
+  ) %>%
+  kable(caption = "Summary of Environmental Variable Imputation", digits = 2)
+```
+
+#### Modeling Utilities
+
+A small set of reusable helper functions was created to prepare model inputs, fit linear models, extract model metrics, and generate standardized coefficient summaries.
+
+```{r ming-helpers}
+#| message: false
+#| warning: false
+
+prepare_model_df <- function(data, outcome, predictors) {
+  data %>% select(all_of(c(outcome, predictors))) %>% drop_na()
+}
+
+fit_linear <- function(data, model_name, outcome, predictors) {
+  d   <- prepare_model_df(data, outcome, predictors)
+  fml <- as.formula(paste(outcome, "~", paste(predictors, collapse = " + ")))
+  fit <- lm(fml, data = d)
+  pred <- predict(fit, newdata = d)
+  rmse <- sqrt(mean((d[[outcome]] - pred)^2))
+  g    <- glance(fit)
+
+  list(
+    metrics = tibble(
+      model_name  = model_name, model_type = "linear",
+      n = nrow(d), aic = g$AIC, bic = g$BIC,
+      rsq = g$r.squared, adj_rsq = g$adj.r.squared, rmse = rmse,
+      pseudo_rsq = NA_real_, accuracy = NA_real_,
+      sensitivity = NA_real_, specificity = NA_real_, auc = NA_real_
+    ),
+    coefs        = tidy(fit) %>% mutate(model_name = model_name, model_type = "linear"),
+    formula_text = paste(deparse(fml), collapse = "")
+  )
+}
+
+standardize_for_lm <- function(data, outcome, predictors) {
+  d       <- data %>% select(all_of(c(outcome, predictors))) %>% drop_na()
+  num_vars <- names(d)[sapply(d, is.numeric)]
+  d %>% mutate(across(all_of(num_vars), ~ as.numeric(scale(.x))))
+}
+
+fit_standardized_linear <- function(data, model_name, outcome, predictors) {
+  d_std <- standardize_for_lm(data, outcome, predictors)
+  fml   <- as.formula(paste(outcome, "~", paste(predictors, collapse = " + ")))
+  fit   <- lm(fml, data = d_std)
+  broom::tidy(fit) %>%
+    filter(term != "(Intercept)") %>%
+    mutate(model_name = model_name, abs_estimate = abs(estimate)) %>%
+    arrange(desc(abs_estimate))
+}
+```
+
+### Variable Screening and Final Specification
+
+This section explains how the final associative-model specification was selected from the broader predictor pool. The goal was not to include every available variable, but to keep interpretable coverage across the five explanatory domains while reducing redundancy among closely related predictors.
+
+#### Initial Candidate Variables
+
+The initial predictor pool was intentionally broad so that each explanatory domain was represented. Candidate variables included route and stop structure, environmental conditions, temporal indicators, operational propagation terms, and vessel/load-related characteristics. This broader pool provided the starting point for a smaller, more interpretable final specification.
+
+```{r ming-domain-predictors}
+#| message: false
+#| warning: false
+
+domain_a_predictors <- intersect(c(
+  "route_id", "direction", "stop_sequence", "is_terminal_stop",
+  "prev_stop_shared_stop_flag", "curr_stop_shared_stop_flag"
+), names(df_imp))
+
+domain_b_predictors <- intersect(c(
+  "env_temperature_c", "env_wind_speed_mps", "env_visibility_m",
+  "env_precipitation_mm", "env_narrows_current_residual",
+  "env_battery_water_level_obs", "env_narrows_current_obs"
+), names(df_imp))
+
+domain_c_predictors <- intersect(c(
+  "prev_stop_sched_hour", "schedule_season", "schedule_daytype"
+), names(df_imp))
+
+domain_d_predictors <- intersect(c(
+  "inherited_prev_trip_delay", "carried_within_trip_delay"
+), names(df_imp))
+
+domain_e_predictors <- intersect(c(
+  "vessel_capacity", "vessel_trip_seq_in_chain",
+  "prev_stop_boardings", "prev_stop_alightings",
+  "prev_stop_onboard", "prev_stop_load_factor"
+), names(df_imp))
+
+final_predictors <- unique(c(
+  domain_a_predictors, domain_b_predictors,
+  domain_c_predictors, domain_d_predictors, domain_e_predictors
+))
+```
+
+#### Redundancy and Multicollinearity Checks
+
+Because several candidate predictors measured closely related aspects of stop position, ridership, and operating context, we reviewed pairwise correlations among numeric predictors before fitting the final associative model. The goal was not to eliminate all correlation, but to identify clusters of variables that conveyed largely overlapping information and would make coefficient interpretation less clear.
+
+```{r ming-corr-setup}
+#| message: false
+#| warning: false
+
+numeric_candidate_predictors <- intersect(
+  candidate_predictors,
+  names(df_imp)[sapply(df_imp, is.numeric)]
+)
+
+corr_vars   <- df_imp %>%
+  select(all_of(numeric_candidate_predictors)) %>%
+  select(where(~ !all(is.na(.))))
+
+corr_matrix <- cor(corr_vars, use = "pairwise.complete.obs")
+```
+
+The figure below highlights selected variables reviewed during specification design. These variables are related to stop position and previous-stop load conditions, so they were checked carefully before finalizing the model.
+
+```{r ming-corr-plot}
+#| fig-width: 6
+#| fig-height: 5
+
+focus_vars <- c("stop_sequence", "prev_stop_sequence", "prev_stop_onboard", "prev_stop_load_factor")
+focus_corr <- corr_matrix[focus_vars, focus_vars]
+
+as.data.frame(as.table(focus_corr)) %>%
+  rename(var1 = Var1, var2 = Var2, corr = Freq) %>%
+  mutate(label = ifelse(var1 == var2, "", sprintf("%.2f", corr))) %>%
+  ggplot(aes(x = var1, y = var2, fill = corr)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(aes(label = label), size = 4) +
+  scale_fill_gradient2(low = "#1A9988", mid = "white", high = "#EB5600", midpoint = 0, limits = c(-1, 1)) +
+  coord_fixed() +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(size = 13, face = "bold", hjust = 0.5)
+  ) +
+  labs(title = "Correlation Among Selected Candidate Predictors", x = NULL, y = NULL, fill = "Correlation")
+```
+
+To support specification decisions more systematically, we also identified highly correlated numeric predictor pairs using an absolute correlation threshold of 0.7.
+
+```{r ming-corr-pairs}
+as.data.frame(as.table(corr_matrix)) %>%
+  rename(var1 = Var1, var2 = Var2, corr = Freq) %>%
+  filter(var1 != var2) %>%
+  mutate(abs_corr = abs(corr)) %>%
+  filter(abs_corr >= 0.7) %>%
+  rowwise() %>%
+  mutate(pair_id = paste(sort(c(var1, var2)), collapse = " || ")) %>%
+  ungroup() %>%
+  distinct(pair_id, .keep_all = TRUE) %>%
+  arrange(desc(abs_corr)) %>%
+  select(var1, var2, corr, abs_corr) %>%
+  head(10) %>%
+  kable(caption = "Highly correlated candidate predictor pairs (|r| >= 0.7)")
+```
+
+#### Final Variable Set
+
+The final variable set was selected to preserve coverage across the five explanatory domains while avoiding unnecessary duplication. When multiple variables represented similar information, we prioritized predictors that were easier to interpret operationally and more directly connected to the domain being represented.
+
+After reviewing correlation patterns, we removed redundant candidate variables and retained a reduced final specification for the combined associative model.
+
+```{r ming-vif-setup}
+#| message: false
+#| warning: false
+
+final_predictors_trimmed <- setdiff(
+  final_predictors,
+  c("prev_stop_sequence", "prev_stop_sched_hour_group")
+)
+
+tibble(
+  model        = "Final combined associative model",
+  n_predictors = length(final_predictors_trimmed)
+) %>% kable(caption = "Predictor count in the final combined associative specification")
+```
+
+```{r ming-vif-run}
+#| message: false
+#| warning: false
+
+fit_vif_model <- function(data, outcome, predictors) {
+  model_df <- data %>% select(all_of(unique(c(outcome, predictors)))) %>% drop_na()
+  lm(as.formula(paste(outcome, "~", paste(predictors, collapse = " + "))), data = model_df)
+}
+
+extract_vif_table <- function(model, model_name) {
+  vif_vals <- car::vif(model)
+  if (is.matrix(vif_vals)) {
+    out <- as.data.frame(vif_vals)
+    out$term <- rownames(out)
+    rownames(out) <- NULL
+    out$model <- model_name
+    out %>% rename(gvif = GVIF) %>%
+      mutate(adjusted_vif = gvif^(1 / (2 * Df))) %>%
+      select(model, term, Df, gvif, adjusted_vif)
+  } else {
+    tibble(model = model_name, term = names(vif_vals), vif = as.numeric(vif_vals)) %>%
+      arrange(desc(vif))
+  }
+}
+
+vif_model_final <- fit_vif_model(df_imp, outcome_cont, final_predictors_trimmed)
+vif_table_final <- extract_vif_table(vif_model_final, "Final combined associative model")
+```
+
+We then checked variance inflation factors for the final combined specification. For multi-level categorical predictors, we report the adjusted GVIF, which is more comparable across terms with different degrees of freedom.
+
+```{r ming-vif-table}
+if ("adjusted_vif" %in% names(vif_table_final)) {
+  vif_table_final %>%
+    arrange(desc(adjusted_vif)) %>%
+    head(10) %>%
+    mutate(gvif = round(gvif, 2), adjusted_vif = round(adjusted_vif, 2)) %>%
+    kable(caption = "Top VIF results for the final combined associative specification")
+} else {
+  vif_table_final %>%
+    arrange(desc(vif)) %>%
+    head(10) %>%
+    mutate(vif = round(vif, 2)) %>%
+    kable(caption = "Top VIF results for the final combined associative specification")
+}
+```
+
+### Estimation Strategy
+
+The associative model was estimated in two steps. First, we fit separate domain-specific linear models to summarize how much stop-level lateness was associated with each explanatory domain on its own. Second, we fit a combined associative model that included predictors from all five domains.
+
+To make model comparisons more consistent, all models were estimated on the same analytic sample used for the final combined specification.
+
+#### Domain-Specific Models
+
+We estimated separate linear models for the five explanatory domains: structural context, environmental conditions, temporal patterns, operational propagation, and vessel/load characteristics. Each model used the same dependent variable: stop-level arrival lateness in minutes.
+
+These models were not treated as competing final models. Instead, they were used to compare the relative explanatory signal of each domain when considered separately.
+
+```{r ming-fit}
+#| message: false
+#| warning: false
+
+df_model <- df_imp %>%
+  drop_na(all_of(c(outcome_cont, final_predictors_trimmed)))
+
+model_results <- list(
+  domain_a_structural   = fit_linear(df_model, "domain_a_structural",   outcome_cont, domain_a_predictors),
+  domain_b_environment  = fit_linear(df_model, "domain_b_environment",  outcome_cont, domain_b_predictors),
+  domain_c_temporal     = fit_linear(df_model, "domain_c_temporal",     outcome_cont, domain_c_predictors),
+  domain_d_operational  = fit_linear(df_model, "domain_d_operational",  outcome_cont, domain_d_predictors),
+  domain_e_vessel       = fit_linear(df_model, "domain_e_vessel",       outcome_cont, domain_e_predictors),
+  combined_associative  = fit_linear(df_model, "combined_associative",  outcome_cont, final_predictors_trimmed)
+)
+```
+
+#### Combined Associative Model
+
+The combined associative model uses the final predictor set across all five domains. This model serves as the main explanatory specification. It allows us to interpret individual coefficients while also discussing how different types of factors contribute to observed delay patterns within one framework.
+
+#### Comparison Logic
+
+Model comparison focused on interpretation rather than predictive model selection. We compared adjusted R-squared and RMSE across the domain-specific models and the combined model. The domain-specific models show how much delay variation is associated with each factor group on its own, while the combined model shows the explanatory power of the full specification.
+
+### Results: Explanatory Contribution by Domain
+
+This section compares how much stop-level delay variation is explained by each explanatory domain. The goal is not to choose a predictive model, but to understand which types of factors are most strongly associated with observed lateness.
+
+The domain-specific models show a clear hierarchy. Operational propagation explains the largest share of delay variation, followed by structural context. Environmental conditions, temporal patterns, and vessel/load characteristics explain smaller shares on their own, but they remain useful for interpretation because they describe monitorable operating conditions.
+
+```{r ming-model-comparison}
+model_comparison_summary <- bind_rows(lapply(model_results, `[[`, "metrics")) %>%
+  mutate(
+    domain = dplyr::recode(
+      model_name,
+      combined_associative  = "Combined Associative Model",
+      domain_a_structural   = "Domain A: Structural Context",
+      domain_b_environment  = "Domain B: Environmental Conditions",
+      domain_c_temporal     = "Domain C: Temporal Patterns",
+      domain_d_operational  = "Domain D: Operational Propagation",
+      domain_e_vessel       = "Domain E: Vessel / Load Characteristics"
+    )
+  ) %>%
+  arrange(match(domain, c(
+    "Domain A: Structural Context", "Domain B: Environmental Conditions",
+    "Domain C: Temporal Patterns",  "Domain D: Operational Propagation",
+    "Domain E: Vessel / Load Characteristics", "Combined Associative Model"
+  )))
+
+model_comparison_summary %>%
+  select(domain, n, rsq, adj_rsq, rmse, aic, bic) %>%
+  mutate(across(c(rsq, adj_rsq, rmse), ~ round(.x, 4)),
+         across(c(aic, bic), ~ round(.x, 0))) %>%
+  kable(caption = "Explained Variation by Domain and Final Combined Associative Model")
+```
+
+```{r ming-domain-rsq-plot}
+#| fig-width: 8
+#| fig-height: 4.5
+
+model_comparison_summary %>%
+  filter(domain != "Combined Associative Model") %>%
+  mutate(domain = factor(domain, levels = domain), adj_rsq = round(adj_rsq, 4)) %>%
+  ggplot(aes(x = domain, y = adj_rsq)) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = round(adj_rsq, 3)), vjust = -0.3, size = 3.5) +
+  labs(title = "Explanatory Contribution by Domain", x = NULL, y = "Adjusted R-squared") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1), plot.title = element_text(face = "bold"))
+```
+
+#### Structural Context
+
+The structural-context model explains a meaningful share of stop-level delay variation on its own. This indicates that route and stop configuration establish an important baseline pattern of delay across the system. In substantive terms, some portions of the ferry network appear structurally more delay-prone than others even before environmental or operational carry-forward effects are considered.
+
+#### Environmental Conditions
+
+The environmental model explains a smaller share of total variation on its own. This does not mean environmental signals are unimportant. Instead, it suggests that weather and water conditions are secondary to propagated delay and structural context, while still offering useful monitorable signals for operational awareness.
+
+#### Temporal Patterns
+
+The temporal model explains a modest share of variation, indicating that day type, scheduled hour, and season capture recurring service rhythms but do not dominate the delay process on their own. These results suggest that delay varies systematically across time, but those temporal patterns are weaker than operational propagation and structural context.
+
+#### Operational Propagation
+
+The operational-propagation model explains the largest share of variation among the individual domains. This confirms that delay accumulation within and across trips is the strongest single explanatory component in the associative model. In other words, stop-level delay is highly path-dependent: once lateness has entered the operating chain, a substantial portion of subsequent delay can be understood as propagated rather than newly generated at each stop.
+
+#### Vessel / Load Characteristics
+
+The vessel/load model explains the smallest share of variation among the five domains. This suggests that vessel capacity and load-related differences are present but relatively limited when considered in isolation. These factors are still useful as operational context, but they are secondary to route structure, external conditions, and propagated delay in explaining stop-level lateness.
+
+### Focused Interpretation of Key Predictors
+
+The previous section compared explanatory contribution across domains. This section focuses on selected predictors used for coefficient interpretation and final presentation findings. These results are intended to make the model findings easier to interpret operationally, not to replace the full combined associative model.
+
+#### Focused Interpretive Specification
+
+In addition to the full combined associative model, we estimated a smaller interpretive specification using predictors selected for coefficient interpretation. This focused model includes prior delay, route context, seasonal and day-type patterns, time bins, selected environmental conditions, and stop sequence.
+
+This model is used to support coefficient interpretation in the final presentation. It should be read as a simplified interpretive view of the larger associative framework.
+
+```{r ming-focused-model}
+selected_predictors <- intersect(c(
+  "inherited_prev_trip_delay", "route_id", "schedule_season",
+  "prev_stop_sched_hour_group", "schedule_daytype",
+  "env_temperature_c", "env_wind_speed_mps", "env_precipitation_mm",
+  "env_battery_water_level_obs", "stop_sequence"
+), names(df_model))
+
+selected_model_df <- prepare_model_df(df_model, outcome_cont, selected_predictors)
+
+selected_formula <- as.formula(paste(
+  outcome_cont, "~",
+  paste(selected_predictors, collapse = " + "),
+  "+ prev_stop_sched_hour_group:schedule_daytype"
+))
+
+selected_fit <- lm(selected_formula, data = selected_model_df)
+
+broom::glance(selected_fit) %>%
+  transmute(
+    model   = "Focused interpretive specification",
+    n       = nobs(selected_fit),
+    rsq     = round(r.squared, 4),
+    adj_rsq = round(adj.r.squared, 4),
+    rmse    = round(sqrt(mean(residuals(selected_fit)^2)), 4),
+    aic     = round(AIC(selected_fit), 0),
+    bic     = round(BIC(selected_fit), 0)
+  ) %>%
+  kable(caption = "Focused Interpretive Specification Fit")
+```
+
+#### Raw Coefficient Interpretation
+
+To support operational interpretation, we report raw coefficients from the focused interpretive specification. These coefficients show the estimated change in arrival lateness, in minutes, associated with each predictor while holding other variables in the model constant.
+
+For numeric predictors, the coefficient is interpreted per one-unit increase. For categorical predictors, coefficients are interpreted relative to the reference category.
+
+```{r ming-raw-coefficients}
+broom::tidy(selected_fit) %>%
+  filter(term != "(Intercept)") %>%
+  mutate(abs_estimate = abs(estimate)) %>%
+  arrange(desc(abs_estimate)) %>%
+  select(term, estimate, std.error, statistic, p.value) %>%
+  mutate(across(c(estimate, std.error), ~ round(.x, 4)),
+         statistic = round(statistic, 2),
+         p.value   = round(p.value, 4)) %>%
+  kable(caption = "Raw Coefficients for Focused Interpretive Specification")
+```
+
+#### Supporting Exploratory Patterns
+
+The following exploratory plots provide visual context for the coefficient interpretation. They show how delay accumulates, how lateness varies across time bins and day type, and how selected environmental and route-level patterns relate to average lateness.
+
+```{r ming-delay-components}
+#| fig-width: 8
+#| fig-height: 4
+
+tibble::tibble(
+  component = factor(
+    c("Inherited previous delay", "Carried within-trip delay", "New delay at current stop"),
+    levels = c("Inherited previous delay", "Carried within-trip delay", "New delay at current stop")
+  ),
+  minutes = c(6.24, 1.85, 1.68)
+) %>%
+  ggplot(aes(x = "Excessive delay example", y = minutes, fill = component)) +
+  geom_col(width = 0.45) +
+  geom_text(aes(label = paste0(minutes, " min")),
+            position = position_stack(vjust = 0.5),
+            color = "white", fontface = "bold", size = 4) +
+  scale_fill_manual(values = c(
+    "Inherited previous delay"   = "#EB5600",
+    "Carried within-trip delay"  = "#1A9988",
+    "New delay at current stop"  = "#C7C7C7"
+  )) +
+  labs(title    = "Where Does Excessive Delay Come From?",
+       subtitle = "Most excessive delay is inherited or carried forward, not newly created at the current stop",
+       x = NULL, y = "Minutes of delay", fill = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank(),
+        panel.grid.major.x = element_blank(), panel.grid.minor = element_blank(),
+        legend.position = "bottom", plot.title = element_text(face = "bold"))
+```
+
+```{r ming-delay-accumulation}
+#| fig-width: 8
+#| fig-height: 5
+
+df_model %>%
+  group_by(route_id, stop_sequence) %>%
+  summarise(avg_lateness = mean(.data[[outcome_cont]], na.rm = TRUE), n = n(), .groups = "drop") %>%
+  filter(n >= 100) %>%
+  ggplot(aes(x = stop_sequence, y = avg_lateness, color = route_id)) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 1.8) +
+  labs(title    = "Delay Accumulation Along Route",
+       subtitle = "Average lateness tends to change as trips move through stop sequence",
+       x = "Stop sequence", y = "Average lateness (minutes)", color = "Route") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+```
+
+```{r ming-time-of-day-setup}
+#| message: false
+#| warning: false
+
+lateness_col <- c(outcome_cont, "arr_lateness", "arr_late_min", "arrival_lateness",
+                  "delay_min", "lateness")[
+  c(outcome_cont, "arr_lateness", "arr_late_min", "arrival_lateness",
+    "delay_min", "lateness") %in% names(df_model)][1]
+
+if (is.na(lateness_col)) stop("Could not find the lateness column.")
+
+time_delay_summary <- df_model %>%
+  mutate(lateness_for_plot = .data[[lateness_col]]) %>%
+  filter(!is.na(prev_stop_sched_hour_group), !is.na(schedule_daytype), !is.na(lateness_for_plot)) %>%
+  group_by(prev_stop_sched_hour_group, schedule_daytype) %>%
+  summarise(avg_lateness = mean(lateness_for_plot, na.rm = TRUE), n = n(), .groups = "drop") %>%
+  mutate(prev_stop_sched_hour_group = factor(
+    prev_stop_sched_hour_group, levels = c("5_8", "9_11", "12_14", "15_17", "18_22")
+  ))
+```
+
+```{r ming-time-of-day-plot}
+#| fig-width: 8
+#| fig-height: 5
+
+ggplot(time_delay_summary, aes(x = prev_stop_sched_hour_group, y = avg_lateness, fill = schedule_daytype)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.6) +
+  scale_fill_manual(values = c("WEEKDAY" = "#EB5600", "WEEKEND" = "#1A9988")) +
+  labs(title = "Average Lateness by Time Bin and Day Type",
+       x = "Scheduled time bin", y = "Average lateness (minutes)", fill = "Day type") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"), legend.position = "bottom")
+```
+
+```{r ming-temperature-setup}
+#| message: false
+#| warning: false
+
+temp_delay_summary <- df_model %>%
+  filter(!is.na(env_temperature_c), !is.na(.data[[outcome_cont]])) %>%
+  mutate(temp_bin = cut(env_temperature_c,
+                        breaks = quantile(env_temperature_c, probs = seq(0, 1, 0.1), na.rm = TRUE),
+                        include.lowest = TRUE)) %>%
+  group_by(temp_bin) %>%
+  summarise(avg_temperature = mean(env_temperature_c, na.rm = TRUE),
+            avg_lateness    = mean(.data[[outcome_cont]], na.rm = TRUE),
+            n = n(), .groups = "drop")
+```
+
+```{r ming-temperature-plot}
+#| fig-width: 8
+#| fig-height: 5
+
+ggplot(temp_delay_summary, aes(x = avg_temperature, y = avg_lateness)) +
+  geom_point(color = "#1A9988", size = 2.5) +
+  geom_smooth(method = "lm", se = FALSE, color = "#EB5600") +
+  labs(title = "Temperature and Average Lateness",
+       x = "Average temperature (°C)", y = "Average lateness (minutes)") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r ming-route-travel-time-plot}
+#| fig-width: 8
+#| fig-height: 5
+
+if ("expected_water_min" %in% names(df_model)) {
+  df_model %>%
+    group_by(route_id) %>%
+    summarise(avg_delay              = mean(.data[[outcome_cont]], na.rm = TRUE),
+              avg_expected_water_min = mean(expected_water_min, na.rm = TRUE),
+              n = n(), .groups = "drop") %>%
+    ggplot(aes(x = avg_expected_water_min, y = avg_delay, label = route_id)) +
+    geom_point(size = 3) +
+    geom_text(nudge_y = 0.15) +
+    geom_smooth(method = "lm", se = FALSE) +
+    labs(title = "Route Travel Time vs Average Lateness",
+         x = "Average expected water travel time (minutes)\n(proxy for route length / exposure)",
+         y = "Average lateness (minutes)") +
+    theme_minimal()
+}
+```
+
+#### Monitorable Signals Beyond Prior Delay
+
+Although operational propagation explains the largest share of delay variation, smaller signals are still useful when they are monitorable. Environmental conditions, time patterns, and vessel/load context may not dominate the model, but they describe conditions that operators can check before or during service.
+
+```{r ming-monitorable-signals}
+#| fig-width: 8
+#| fig-height: 5
+
+domain_e_plot_predictors <- intersect(c(
+  domain_e_predictors, "prev_stop_boardings", "prev_stop_alightings",
+  "prev_stop_onboard", "prev_stop_load_factor"
+), names(df_model))
+
+bce_predictors       <- unique(c(domain_b_predictors, domain_c_predictors, domain_e_plot_predictors))
+plot_model_predictors <- unique(c(domain_a_predictors, domain_b_predictors, domain_c_predictors,
+                                   domain_d_predictors, domain_e_plot_predictors))
+numeric_predictors   <- plot_model_predictors[sapply(df_model[plot_model_predictors], is.numeric)]
+
+df_model_std <- df_model %>%
+  mutate(across(all_of(numeric_predictors), ~ as.numeric(scale(.x))))
+
+combined_std_fit <- lm(
+  as.formula(paste(outcome_cont, "~", paste(plot_model_predictors, collapse = " + "))),
+  data = df_model_std
+)
+
+label_lookup <- c(
+  env_temperature_c              = "Temperature",
+  env_wind_speed_mps             = "Wind speed",
+  env_visibility_m               = "Visibility",
+  env_precipitation_mm           = "Precipitation",
+  env_battery_water_level_obs    = "Water level",
+  env_battery_water_level_anomaly = "Water-level anomaly",
+  env_narrows_current_obs        = "Current",
+  env_narrows_current_residual   = "Current residual",
+  prev_stop_sched_hour           = "Previous scheduled hour",
+  prev_stop_sched_hour_group     = "Previous scheduled hour group",
+  schedule_season                = "Schedule season",
+  schedule_daytype               = "Schedule day type",
+  vessel_capacity                = "Vessel capacity",
+  vessel_trip_seq_in_chain       = "Vessel trip sequence",
+  prev_stop_boardings            = "Boardings",
+  prev_stop_alightings           = "Alightings",
+  prev_stop_onboard              = "Onboard count",
+  prev_stop_load_factor          = "Load factor"
+)
+
+get_base_var <- function(term, vars) {
+  hits <- vars[vapply(vars, function(v) startsWith(term, v), logical(1))]
+  if (length(hits) == 0) return(NA_character_)
+  hits[which.max(nchar(hits))]
+}
+
+coef_plot_df <- broom::tidy(combined_std_fit) %>%
+  filter(term != "(Intercept)") %>%
+  rowwise() %>%
+  mutate(variable = get_base_var(term, bce_predictors)) %>%
+  ungroup() %>%
+  filter(!is.na(variable)) %>%
+  mutate(
+    domain = case_when(
+      variable %in% domain_b_predictors       ~ "Environmental Conditions",
+      variable %in% domain_c_predictors       ~ "Temporal Patterns",
+      variable %in% domain_e_plot_predictors  ~ "Demand and Vessel Context",
+      TRUE ~ "Other"
+    )
+  ) %>%
+  filter(domain != "Other",
+         !str_detect(term, "^schedule_season"),
+         !variable %in% c("prev_stop_load_factor", "prev_stop_onboard", "vessel_trip_seq_in_chain")) %>%
+  mutate(
+    clean_label = if_else(
+      variable %in% names(label_lookup),
+      unname(label_lookup[variable]),
+      variable
+    ),
+    clean_label = case_when(
+      variable == "schedule_daytype"           ~ str_replace(term, variable, "Schedule day type "),
+      variable == "prev_stop_sched_hour_group" ~ str_replace(term, variable, "Previous scheduled hour "),
+      TRUE ~ clean_label
+    ),
+    abs_estimate = abs(estimate)
+  )
+
+coef_plot_top <- bind_rows(
+  coef_plot_df %>% filter(domain == "Environmental Conditions") %>% slice_max(abs_estimate, n = 4, with_ties = FALSE),
+  coef_plot_df %>% filter(domain == "Temporal Patterns")        %>% slice_max(abs_estimate, n = 3, with_ties = FALSE),
+  coef_plot_df %>% filter(domain == "Demand and Vessel Context") %>% slice_max(abs_estimate, n = 4, with_ties = FALSE)
+) %>%
+  distinct(term, .keep_all = TRUE) %>%
+  arrange(abs_estimate)
+
+ggplot(coef_plot_top, aes(x = reorder(clean_label, abs_estimate), y = abs_estimate, fill = domain)) +
+  geom_col(width = 0.72) +
+  coord_flip() +
+  scale_fill_manual(values = c(
+    "Environmental Conditions"  = "#1A9988",
+    "Temporal Patterns"         = "#7A7A7A",
+    "Demand and Vessel Context" = "#EB5600"
+  )) +
+  labs(title = "Monitorable Signals Beyond Prior Delay",
+       x = NULL, y = "Absolute standardized coefficient", fill = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom", panel.grid.major.y = element_blank(),
+        plot.title = element_text(face = "bold"))
+```
+
+#### Operational Interpretation
+
+The focused coefficient results and supporting plots reinforce three operational takeaways.
+
+First, prior delay remains the strongest signal. This means delay management needs to account for accumulation across stops and linked trips, not only conditions at the current stop.
+
+Second, route and stop structure matter. Some parts of the system appear to have a less favorable baseline, meaning they may be more vulnerable to delay even before short-run conditions are considered.
+
+Third, weather, water, time, and vessel/load patterns are smaller signals, but they are monitorable. They can help operators understand when conditions may be less favorable and where extra attention may be useful.
 
 ## Predictive Model
+**By: Guangze 'Simon' Sun**
 
+### Feature Table Construction
 
+The prediction feature table consolidates schedule structure, stop context, lagged demand, vessel traffic (AIS), and environmental conditions into a single modeling dataset. Each row represents one stop-level trip observation. The table below lists the required predictors; the build chunk is set to `eval: false` since it writes output files and depends on the full source parquet.
 
+```{r simon-feature-paths}
+#| eval: false
+
+source_parquet <- "../exploratory_code/modeling/baseline_prediction_table_stop_level_v2.parquet"
+out_csv     <- "../exploratory_code/modeling/final_predictive_feature_table.csv"
+out_parquet <- "../exploratory_code/modeling/final_predictive_feature_table.parquet"
+```
+
+```{r simon-build-feature-table}
+#| eval: false
+
+feature_table <- arrow::read_parquet(source_parquet) %>% as_tibble()
+
+required_predictors <- c(
+  "alightings_lag_7d", "boardings_lag_7d", "curr_stop_shared_stop_flag",
+  "curr_vessel_count_lag_7d", "direction", "expected_water_min",
+  "is_terminal_stop", "planned_turnaround_gap_min", "prev_stop_sched_hour",
+  "prev_stop_shared_stop_flag", "prev_vessel_count_lag_7d", "schedule_daytype",
+  "schedule_season", "scheduled_headway_min", "stop_sequence", "vessel_capacity",
+  "vessel_trip_seq_in_chain", "env_battery_water_level_obs", "env_narrows_current_obs",
+  "env_precipitation_mm", "env_temperature_c", "env_visibility_m",
+  "env_wind_speed_mps", "from_stop_id", "to_stop_id", "segment_hourly_vessel_count_all"
+)
+
+required_columns <- c("trip_date", "lateness_vs_original_schedule_min", required_predictors)
+missing_columns  <- setdiff(required_columns, names(feature_table))
+if (length(missing_columns) > 0) stop("Missing required columns: ", paste(missing_columns, collapse = ", "))
+stopifnot(nrow(feature_table) > 0)
+stopifnot(anyDuplicated(names(feature_table)) == 0)
+stopifnot("segment_hourly_vessel_count_all" %in% names(feature_table))
+stopifnot("prev_stop_sched_hour" %in% names(feature_table))
+
+readr::write_csv(feature_table, out_csv)
+arrow::write_parquet(feature_table, out_parquet)
+stopifnot(file.exists(out_csv), file.exists(out_parquet))
+```
+
+### Baseline Model-Family Comparison
+
+We used a chronological train / validation / test split. The most recent 30 days were held out as the test set, the previous 30 days were used as validation, and earlier observations were used for training. This matches the operational setting where future trips are predicted from historical data.
+
+The baseline screen compared five model families: Logistic Regression, SVM, DNN, Random Forest, and XGBoost. SVM used a capped 20,000-row stratified training sample, so it should be interpreted as lightweight screening evidence. The baseline screen supported carrying forward Random Forest and XGBoost for focused finalist comparison.
+
+```{r simon-paths}
+#| message: false
+#| warning: false
+
+model_dir <- "../exploratory_code/modeling"
+
+baseline_file   <- file.path(model_dir, "baseline_model_family_comparison.csv")
+prediction_file <- file.path(model_dir, "final_rf_xgb_test_predictions.csv")
+importance_file <- file.path(model_dir, "final_rf_top10_feature_importance.csv")
+
+threshold_source_note <- "Test predictions were used for the recall >= 0.20 operating-point table because validation prediction probabilities were not available in the final delivery package."
+rf_xgb_highlight_note <- "Yellow shading marks recall ranges where RF has higher precision than XGBoost and at least one model has precision >= 0.10."
+```
+
+```{r simon-baseline-plot}
+#| warning: false
+#| message: false
+#| fig-cap: "Validation ROC-AUC from the baseline screen. SVM used a capped training sample and is included as lightweight screening evidence."
+
+if (!file.exists(baseline_file)) {
+  warning("Missing baseline comparison file: ", baseline_file)
+} else {
+  baseline_tbl <- read_csv(baseline_file, show_col_types = FALSE) %>%
+    mutate(model_family = fct_reorder(model_family, validation_roc_auc))
+
+  ggplot(baseline_tbl, aes(x = validation_roc_auc, y = model_family)) +
+    geom_col(fill = "#1A9988", width = 0.68) +
+    scale_x_continuous(labels = percent_format(accuracy = 1), limits = c(0, NA)) +
+    labs(title = "Baseline Model-Family Screen", x = "Validation ROC-AUC", y = NULL) +
+    theme_minimal(base_size = 15) +
+    theme(plot.title = element_text(face = "bold", size = 18), panel.grid.minor = element_blank())
+}
+```
+
+### Final RF vs XGBoost Comparison
+
+After the baseline screen, we focused on Random Forest and XGBoost. Both model families can capture nonlinear relationships and interactions among schedule structure, stop context, lagged demand, vessel traffic, and environmental conditions.
+
+The final tuning process used `trees = 1500` as the practical central setting. Around that tree count, RF tuning mainly adjusted `mtry` and `min_n`. XGBoost tuning adjusted tree depth, `min_n`, learning rate, loss reduction, and feature sampling. The final comparison retained one RF operational candidate and one XGBoost benchmark candidate.
+
+XGBoost remains a strong predictive benchmark, but the dashboard use case emphasizes conservative alerting rather than global ranking alone. In the higher-precision region, Random Forest provides a more useful recall balance, so we select RF as the operational model and retain XGBoost as the benchmark.
+
+```{r simon-pr-curve}
+#| warning: false
+#| message: false
+#| fig-cap: "Yellow shading marks recall ranges where RF has higher precision than XGBoost."
+
+if (!file.exists(prediction_file)) {
+  warning("Missing final RF/XGB prediction file: ", prediction_file)
+} else {
+  pred_tbl <- read_csv(prediction_file, show_col_types = FALSE) %>%
+    mutate(delay_gt_10 = factor(delay_gt_10, levels = c("no", "yes")))
+
+  pr_tbl <- bind_rows(
+    pred_tbl %>% transmute(model = "Final RF",  delay_gt_10, .pred_yes = rf_pred_yes)  %>%
+      group_by(model) %>% pr_curve(truth = delay_gt_10, .pred_yes, event_level = "second"),
+    pred_tbl %>% transmute(model = "Final XGB", delay_gt_10, .pred_yes = xgb_pred_yes) %>%
+      group_by(model) %>% pr_curve(truth = delay_gt_10, .pred_yes, event_level = "second")
+  )
+
+  prep_curve <- function(dat, model_name) {
+    dat %>%
+      filter(model == model_name, is.finite(recall), is.finite(precision)) %>%
+      group_by(recall) %>%
+      summarise(precision = max(precision, na.rm = TRUE), .groups = "drop") %>%
+      arrange(recall)
+  }
+
+  interp_precision <- function(curve, recall_grid) {
+    approx(curve$recall, curve$precision, xout = recall_grid, rule = 2, ties = "ordered")$y
+  }
+
+  rf_curve  <- prep_curve(pr_tbl, "Final RF")
+  xgb_curve <- prep_curve(pr_tbl, "Final XGB")
+  max_shared_recall <- min(max(rf_curve$recall, na.rm = TRUE), max(xgb_curve$recall, na.rm = TRUE))
+  recall_grid <- seq(0, max_shared_recall, length.out = 600)
+
+  highlight_grid <- tibble(
+    recall        = recall_grid,
+    rf_precision  = interp_precision(rf_curve,  recall_grid),
+    xgb_precision = interp_precision(xgb_curve, recall_grid)
+  ) %>%
+    mutate(
+      high_precision_region = pmax(rf_precision, xgb_precision, na.rm = TRUE) >= 0.10,
+      rf_above_xgb = rf_precision > xgb_precision,
+      highlight    = rf_above_xgb & high_precision_region
+    )
+
+  if (!any(highlight_grid$highlight, na.rm = TRUE)) {
+    highlight_grid <- highlight_grid %>% mutate(highlight = rf_above_xgb)
+    rf_xgb_highlight_note <- "No RF-above-XGB intervals met the precision >= 0.10 rule, so the plot highlights all recall ranges where RF precision is above XGBoost."
+  }
+
+  highlight_intervals <- highlight_grid %>%
+    mutate(run_id = cumsum(highlight != lag(highlight, default = first(highlight)))) %>%
+    filter(highlight) %>%
+    group_by(run_id) %>%
+    summarise(xmin = min(recall), xmax = max(recall), .groups = "drop") %>%
+    filter(xmax > xmin)
+
+  ggplot(pr_tbl, aes(x = recall, y = precision, color = model)) +
+    geom_rect(data = highlight_intervals,
+              aes(xmin = xmin, xmax = xmax, ymin = 0, ymax = 1),
+              inherit.aes = FALSE, fill = "#F2E8CF", alpha = 0.55) +
+    geom_path(linewidth = 1.15) +
+    scale_color_manual(values = c("Final RF" = "#D95F59", "Final XGB" = "#1A9988")) +
+    scale_x_continuous(labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+    scale_y_continuous(labels = percent_format(accuracy = 1), limits = c(0, NA)) +
+    labs(title = "Final RF vs XGBoost Precision-Recall Curve",
+         x = "Recall", y = "Precision", color = NULL) +
+    theme_minimal(base_size = 15) +
+    theme(plot.title = element_text(face = "bold", size = 18),
+          panel.grid.minor = element_blank(), legend.position = "bottom")
+}
+```
+
+### Final RF Feature Importance
+
+We inspected feature importance from the final Random Forest model to understand what types of advance-available information the operational model relies on. This importance is model-based and descriptive; it is not a causal estimate.
+
+The top features combine environmental / water-condition variables and recurring operational patterns.
+
+```{r simon-feature-importance}
+#| warning: false
+#| message: false
+
+if (!file.exists(importance_file)) {
+  warning("Missing RF feature importance file: ", importance_file)
+} else {
+  importance_tbl <- read_csv(importance_file, show_col_types = FALSE) %>%
+    arrange(desc(importance)) %>%
+    slice_head(n = 10) %>%
+    mutate(
+      display_label = dplyr::recode(
+        feature,
+        segment_hourly_vessel_count_all  = "Segment vessel count, 7-day lag",
+        boardings_lag_7d                 = "Boardings, 7-day lag",
+        alightings_lag_7d                = "Alightings, 7-day lag",
+        curr_vessel_count_lag_7d         = "Current-stop vessel count, 7-day lag",
+        prev_vessel_count_lag_7d         = "Previous-stop vessel count, 7-day lag",
+        env_temperature_c                = "Temperature",
+        env_battery_water_level_obs      = "Battery water level",
+        env_narrows_current_obs          = "Narrows current",
+        env_precipitation_mm             = "Precipitation",
+        env_visibility_m                 = "Visibility",
+        env_wind_speed_mps               = "Wind speed",
+        expected_water_min               = "Expected water time",
+        planned_turnaround_gap_min       = "Planned turnaround gap",
+        prev_stop_sched_hour             = "Scheduled hour",
+        .default = str_to_sentence(str_replace_all(feature, "_", " "))
+      )
+    )
+
+  ggplot(importance_tbl, aes(x = importance, y = fct_reorder(display_label, importance))) +
+    geom_col(fill = "#1A9988", width = 0.72) +
+    labs(title = "Final RF Feature Importance", x = "Importance", y = NULL) +
+    theme_minimal(base_size = 15) +
+    theme(plot.title = element_text(face = "bold", size = 18), panel.grid.minor = element_blank())
+}
+```
+
+The final RF relies on a mix of environmental conditions, water-current context, and recurring operational demand/vessel-pattern features.
 
 # Interpretation and Implications
 

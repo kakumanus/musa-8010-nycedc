@@ -30,6 +30,15 @@ exploratory_code/ais-eda/.DS_Store
 exploratory_code/.DS_Store
 .DS_Store
 
+# Technical report cache and build artifacts
+nyc_ferry_technical_report/technical-report_cache/
+nyc_ferry_technical_report/technical-report_files/
+
+# Large data files
+exploratory_code/swiftly_eda/swiftly_gps.2025_06.csv
+exploratory_code/modeling/final_predictive_feature_table.csv
+exploratory_code/modeling/final_predictive_feature_table.parquet
+
 # nyc_ferry_app (Astro)
 nyc_ferry_app/node_modules/
 nyc_ferry_app/dist/
