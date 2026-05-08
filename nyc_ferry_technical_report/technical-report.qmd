@@ -30,18 +30,10 @@ p_load(tidyverse, sf, viridis, lubridate, kableExtra, gridExtra, ggthemes, ggspa
 
 # Use Case
 
-NYC Ferry launched on May 1st, 2017 with a broad goal: connect underserved communities, complement existing transit, and support growing
-neighborhoods. That mission is reflected in how the system is designed — single-seat rides are possible between communities as far apart as   
-the Bronx and the Rockaways. Since launch, the system has crossed 50 million riders and today spans 5 routes operated by 38 custom-built
-vessels across New York Harbor.                                                                                                               
+NYC Ferry launched on May 1st, 2017 with a broad goal: connect underserved communities, complement existing transit, and support growing neighborhoods. That mission is reflected in how the system is designed — single-seat rides are possible between communities as far apart as the Bronx and the Rockaways. Since launch, the system has crossed 50 million riders and today spans 5 routes operated by 38 custom-built vessels across New York Harbor.                                                                                                               
                 
-This project was done in partnership with the NYC Economic Development Corporation, the operator of NYC Ferry, to support on-time performance through  
-better operational forecasting. The use case centers on an operational manager who needs to allocate resources — upland agents, sweep boats,
-vessel assignments — ahead of anticipated delays.                                                                                             
-                
-This breaks down into two key deliverables. First, an associative model exploring the historical contributing factors to delays between       
-landings. Second, a predictive model that estimates the probability of an excessive delay (>10 minutes) between landings up to 48 hours ahead
-of a scheduled departure. The latter feeds into a web-based application designed for operational use. 
+This project was done in partnership with the NYC Economic Development Corporation, the operator of NYC Ferry, to support on-time performance through better operational forecasting. The use case centers on an operational manager who needs to allocate resources — upland agents, sweep boats, vessel assignments — ahead of anticipated delays.                                                                                             
+This breaks down into two key deliverables. First, an associative model exploring the historical contributing factors to delays between landings. Second, a predictive model that estimates the probability of an excessive delay (>10 minutes) between landings up to 48 hours ahead of a scheduled departure. The latter feeds into a web-based application designed for operational use. 
 
 
 # Exploratory Data Analysis
@@ -3348,6 +3340,7 @@ Finally, there is meaningful untapped signal in the captain notes recorded in th
 # Acknowledgements
 
 Thank you to Rebekah Adams of the NYC Economic Development Corporation — our client representative and MUSA alum — for helping put this project together and hosting us at the EDC headquarters. Her support was instrumental in shaping the project's direction. Thank you as well to the entire NYC Ferry team for providing invaluable operational insights into the system. We all came away with a much deeper understanding of how the ferry network functions day to day. 
+
 Finally, thank you to Professor Michael Fichman and Matt Harris of the MUSA Program for guiding us through the practicum course. Their candid feedback helped us iterate on this project throughout the semester, culminating in a final presentation we felt proud of.
 
 # Code Appendix
