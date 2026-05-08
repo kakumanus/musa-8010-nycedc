@@ -12,6 +12,7 @@ execute:
 
 ::: {.d-flex .gap-2 .mb-4}
 [Launch our Application ↗](https://sujankakumanu.com/musa-8010-nycedc/){.btn .btn-primary .btn-sm target="_blank"}
+
 [Go to the MUSA Practicum Page ↗](https://pennmusa.github.io/MUSA_801.io/){.btn .btn-primary .btn-sm target="_blank"}
 :::
 
@@ -3321,18 +3322,29 @@ if (!file.exists(importance_file)) {
 
 The final RF relies on a mix of environmental conditions, water-current context, and recurring operational demand/vessel-pattern features.
 
-# Interpretation and Implications
+# Concluding Remarks
 
+## Takeaways
 
+The analysis combined two complementary modeling approaches to understand and anticipate service delays in the NYC Ferry system. A stacked linear regression model — trained on stop-level observations across five feature domains — explained 74% of arrival lateness variation. The dominant driver was operational propagation: inherited delay from a prior trip alone accounted for 59% of explanatory power, with each minute of prior delay carrying forward 0.81 minutes, and each additional stop in sequence adding 0.52 minutes. Structural route context (notably the Rockaway route at +3.2 minutes above reference), temporal patterns (afternoon 15–17 windows, summer service periods), and environmental conditions (temperature, wind, water level) contributed smaller but monitorable signals.
+
+The predictive component used a Random Forest classifier — selected over logistic regression, SVM, deep neural network, and XGBoost based on precision-oriented evaluation — to assign each trip an excessive-delay probability (defined as >10 minutes) up to 48 hours before departure, using only features available at that planning horizon. Same-day realized outcomes were excluded in favor of 7-day lag ridership and vessel counts alongside forecast-based environmental conditions. Predicted probabilities were mapped to low, medium, and high risk bands to support operator decision-making around vessel allocation and landing staffing. 
+
+Key limitations include class imbalance in training data, a training window restricted to January 2024 through June 2025, and dependency on the pre-December 2025 route structure.
+
+## Future Work
+
+A major area for future work is operationalizing the data pipeline. In its current form, the project processes data from large CSVs using R scripts, which constrained both collaboration and the volume of data that could be ingested — limiting the training window to January 2024 through June 2025. Moving data into a database accessible via an API would enable a proper machine learning pipeline, allowing for faster model iteration and likely improved performance.
+
+This infrastructure improvement would also directly benefit the web application. Currently, the app relies on a static precomputation of all possible Random Forest outputs, a workaround made necessary by treating temperature and precipitation as discrete bins rather than continuous values. It also substitutes historical lag variables from 2024–2025 in place of true 7-day rolling counts. A live data pipeline would resolve both limitations and, critically, allow new trip data to be incorporated into model training on an ongoing basis — particularly important given the December 2025 system redesign, which rendered the existing training data partially obsolete.
+
+Finally, there is meaningful untapped signal in the captain notes recorded in the trip data. Exploratory analysis indicated that coast guard restrictions and landing closures measurably affect delays, but no structured ground-truth labels currently exist for these events. Combining natural language analysis of captain notes with operational variables such as marine traffic density could unlock a richer understanding of delay causes that the current modeling framework is unable to capture.
 
 
 # Acknowledgements
 
-
-
+Thank you to Rebekah Adams of the NYC Economic Development Corporation — our client representative and MUSA alum — for helping put this project together and hosting us at the EDC headquarters. Her support was instrumental in shaping the project's direction. Thank you as well to the entire NYC Ferry team for providing invaluable operational insights into the system. We all came away with a much deeper understanding of how the ferry network functions day to day. 
+Finally, thank you to Professor Michael Fichman and Matt Harris of the MUSA Program for guiding us through the practicum course. Their candid feedback helped us iterate on this project throughout the semester, culminating in a final presentation we felt proud of.
 
 # Code Appendix
-Through this project process, we wrote a lot of code that is not meaningful toward our final results. You can view that below.
-
-
-# References
+Through this project process, we wrote a lot of code that is not meaningful toward our final results and biggest takeaways. This code lives in various markdown files in our [Github Repo](https://github.com/kakumanus/musa-8010-nycedc/tree/main).
