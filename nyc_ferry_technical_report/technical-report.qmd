@@ -20,6 +20,7 @@ execute:
 ```{r setup}
 #| message: false
 #| warning: false
+#| cache: false
 
 # Set options
 options(scipen = 999, dplyr.summarise.inform = FALSE)
@@ -3173,6 +3174,7 @@ rf_xgb_highlight_note <- "Yellow shading marks recall ranges where RF has higher
 ```{r simon-baseline-plot}
 #| warning: false
 #| message: false
+#| cache: false
 #| fig-cap: "Validation ROC-AUC from the baseline screen. SVM used a capped training sample and is included as lightweight screening evidence."
 
 if (!file.exists(baseline_file)) {
@@ -3201,6 +3203,7 @@ XGBoost remains a strong predictive benchmark, but the dashboard use case emphas
 ```{r simon-pr-curve}
 #| warning: false
 #| message: false
+#| cache: false
 #| fig-cap: "Yellow shading marks recall ranges where RF has higher precision than XGBoost."
 
 if (!file.exists(prediction_file)) {
